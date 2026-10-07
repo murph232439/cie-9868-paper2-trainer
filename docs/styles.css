@@ -1158,6 +1158,12 @@ select:focus-visible {
   line-height: 1.7;
 }
 
+.mock-choice-card .mock-choice-question {
+  color: var(--ink);
+  font-size: 17px;
+  font-weight: 650;
+}
+
 .mock-complete-card {
   width: min(840px, 100%);
   text-align: center;
