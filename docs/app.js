@@ -1,4 +1,4 @@
-import { TRACKS, LANGUAGE_LIBRARY, BOSS_PROMPTS, PRACTICE_BANK } from "./data.js?v=18";
+import { TRACKS, LANGUAGE_LIBRARY, BOSS_PROMPTS, PRACTICE_BANK } from "./data.js?v=19";
 
 const LITERATURE_TRACK = {
   id: "literature",
@@ -97,6 +97,7 @@ const defaultState = {
   completedQuestions: {},
   mistakes: [],
   history: [],
+  submissions: [],
   savedLanguage: [],
   projection: false
 };
@@ -138,6 +139,7 @@ function freshSession() {
     trackView: "questions",
     practiceMode: false,
     practiceLevel: null,
+    stepAnswers: [],
     bossPrompt: BOSS_PROMPTS[0],
     bossMode: "outline",
     bossFields: ["", "", "", ""],
@@ -264,6 +266,7 @@ function render() {
   else if (section === "boss") renderBoss();
   else if (section === "bank") renderBank(first);
   else if (section === "practice") renderPractice(first, second);
+  else if (section === "complete") renderComplete(first);
   else renderHome();
 
   renderTopStats();
@@ -893,11 +896,86 @@ function renderPractice(trackId, index) {
       levelId: level.id,
       practiceMode: true,
       practiceLevel: level,
+      stepAnswers: [],
       practicePrompt: level.summary,
       practiceKey: questionKey(trackId, Number(index))
     };
   }
   renderLevelView(track, level);
+}
+
+function renderComplete(submissionId) {
+  const submission = state.submissions.find((item) => item.id === submissionId);
+  if (!submission) return renderHome();
+
+  app.innerHTML = `
+    <section class="complete-view">
+      <canvas id="confettiCanvas" class="confetti-canvas" aria-hidden="true"></canvas>
+      <div class="complete-card">
+        <div class="complete-icon">${icon("party-popper", 52)}</div>
+        <h1>Congratulations</h1>
+        <p class="complete-lead">不错哦！现在你完成了</p>
+        <p class="complete-question">“${escapeHtml(submission.question)}”</p>
+        <p class="complete-lead">继续练习下一道题吧！</p>
+        <div class="task-actions">
+          <button class="button primary" data-route="${`#/track/${submission.trackId}`}">${icon("play")} 再练一道</button>
+          <button class="button" data-route="#/progress">${icon("clipboard-list")} 查看我的提交</button>
+          <button class="button ghost" data-route="#/home">${icon("home")} 回到首页</button>
+        </div>
+      </div>
+    </section>
+  `;
+  window.requestAnimationFrame(startConfetti);
+}
+
+function startConfetti() {
+  const canvas = document.querySelector("#confettiCanvas");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const dpr = window.devicePixelRatio || 1;
+  const width = window.innerWidth;
+  const height = window.innerHeight;
+  canvas.width = width * dpr;
+  canvas.height = height * dpr;
+  canvas.style.width = `${width}px`;
+  canvas.style.height = `${height}px`;
+  ctx.scale(dpr, dpr);
+
+  const colors = ["#0f766e", "#b45309", "#b43b2f", "#0e7490", "#6d28d9", "#d97706"];
+  const particles = Array.from({ length: 130 }, () => ({
+    x: Math.random() * width,
+    y: -30 - Math.random() * height * 0.5,
+    w: 7 + Math.random() * 6,
+    h: 9 + Math.random() * 8,
+    vx: -1.2 + Math.random() * 2.4,
+    vy: 2 + Math.random() * 3.5,
+    rotation: Math.random() * Math.PI,
+    rotationSpeed: -0.12 + Math.random() * 0.24,
+    color: colors[Math.floor(Math.random() * colors.length)]
+  }));
+
+  const startedAt = performance.now();
+  function frame(now) {
+    ctx.clearRect(0, 0, width, height);
+    particles.forEach((particle) => {
+      particle.x += particle.vx;
+      particle.y += particle.vy;
+      particle.rotation += particle.rotationSpeed;
+      ctx.save();
+      ctx.translate(particle.x, particle.y);
+      ctx.rotate(particle.rotation);
+      ctx.fillStyle = particle.color;
+      ctx.fillRect(-particle.w / 2, -particle.h / 2, particle.w, particle.h);
+      ctx.restore();
+    });
+    if (now - startedAt < 5200) {
+      window.requestAnimationFrame(frame);
+    } else {
+      ctx.clearRect(0, 0, width, height);
+      canvas.remove();
+    }
+  }
+  window.requestAnimationFrame(frame);
 }
 
 function stepKindLabel(kind) {
@@ -1043,6 +1121,19 @@ function currentLevel() {
     : getLevel(session.trackId, session.levelId);
 }
 
+function stepAnswerText(step) {
+  if (step.kind === "choice") {
+    return step.options[session.selected] ?? "";
+  }
+  if (step.kind === "multi") {
+    return session.selectedMulti.map((index) => step.options[index]).join("；");
+  }
+  if (step.kind === "order") {
+    return session.orderSeq.map((index) => step.items[index]).join("，");
+  }
+  return session.text.trim();
+}
+
 function checkStep() {
   const track = getTrack(session.trackId);
   const level = currentLevel();
@@ -1051,6 +1142,13 @@ function checkStep() {
 
   session.passed = evaluateStep(step);
   session.checked = true;
+
+  if (session.practiceMode) {
+    session.stepAnswers[session.stepIndex] = {
+      prompt: step.prompt,
+      answer: stepAnswerText(step)
+    };
+  }
 
   if (!session.passed) {
     recordMistake(track, level, step);
@@ -1089,6 +1187,17 @@ function completeLevel(track, level) {
     if (session.practiceKey && !completedQuestions(track.id).includes(session.practiceKey)) {
       state.completedQuestions[track.id] = [...completedQuestions(track.id), session.practiceKey];
     }
+    const submission = {
+      id: `${Date.now()}-${session.practiceKey ?? "practice"}`,
+      trackId: track.id,
+      trackName: track.name,
+      question: session.practicePrompt ?? level.summary,
+      levelTitle: level.title,
+      date: new Date().toLocaleString("zh-CN", { hour12: false }),
+      answers: (session.stepAnswers ?? []).filter(Boolean)
+    };
+    state.submissions.unshift(submission);
+    state.submissions = state.submissions.slice(0, 30);
     state.xp += 25;
     state.history.unshift({
       date: new Date().toLocaleString("zh-CN", { hour12: false }),
@@ -1098,8 +1207,8 @@ function completeLevel(track, level) {
     state.history = state.history.slice(0, 30);
     touchStreak();
     saveState();
-    toast("选题练习完成，获得 25 XP");
-    navigate(`#/track/${track.id}`);
+    toast("练习完成，获得 25 XP");
+    navigate(`#/complete/${submission.id}`);
     return;
   }
   const alreadyDone = isLevelCompleted(track.id, level.id);
@@ -1279,7 +1388,87 @@ function renderProgress() {
         }
       </div>
     </section>
+    <section class="section">
+      <div class="panel">
+        <h2>我的提交</h2>
+        <p class="muted">每完成一道题，你的作答都会保存在这里。可以展开查看、复制或截图发给老师批改。</p>
+        ${
+          state.submissions.length
+            ? `<div class="submission-list">${state.submissions.map(renderSubmissionCard).join("")}</div>`
+            : `<div class="empty-state">还没有提交记录。完成一道题库练习后，这里会自动保存你的作答。</div>`
+        }
+      </div>
+    </section>
   `;
+}
+
+function renderSubmissionCard(submission) {
+  const answerText = submission.answers
+    .map((item, index) => `${index + 1}. ${item.prompt}\n答：${item.answer || "未填写"}`)
+    .join("\n\n");
+  return `
+    <article class="submission-card">
+      <div class="submission-head">
+        <div>
+          <span class="chip">${escapeHtml(submission.trackName)}</span>
+          <strong>${escapeHtml(submission.question)}</strong>
+          <p class="muted">${escapeHtml(submission.date)} · ${submission.answers.length} 个作答步骤</p>
+        </div>
+        <div class="task-actions">
+          <button class="button" data-action="copy-submission" data-id="${submission.id}">${icon("copy")} 复制全部</button>
+          <button class="button ghost" data-action="print-submission" data-id="${submission.id}">${icon("printer")} 打印</button>
+        </div>
+      </div>
+      <details class="submission-details">
+        <summary>展开查看我的作答</summary>
+        <pre>${escapeHtml(answerText)}</pre>
+      </details>
+    </article>
+  `;
+}
+
+function buildSubmissionText(id) {
+  const submission = state.submissions.find((item) => item.id === id);
+  if (!submission) return "";
+  const answers = submission.answers
+    .map((item, index) => `${index + 1}. ${item.prompt}\n答：${item.answer || "未填写"}`)
+    .join("\n\n");
+  return `训练类型：${submission.trackName}\n题目：${submission.question}\n完成时间：${submission.date}\n\n${answers}`;
+}
+
+function copySubmission(id) {
+  const text = buildSubmissionText(id);
+  if (!text) return;
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).then(() => toast("提交内容已复制")).catch(() => fallbackCopy(text));
+  } else {
+    fallbackCopy(text);
+  }
+}
+
+function fallbackCopy(text) {
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  textarea.remove();
+  toast("提交内容已复制");
+}
+
+function printSubmission(id) {
+  const text = buildSubmissionText(id);
+  if (!text) return;
+  const printWindow = window.open("", "_blank", "width=760,height=900");
+  if (!printWindow) {
+    toast("浏览器阻止了新窗口。请复制内容后自行打印。");
+    return;
+  }
+  printWindow.document.write(`<meta charset="utf-8"><title>我的提交</title><pre style="white-space:pre-wrap;font-family:system-ui;padding:24px;line-height:1.7">${escapeHtml(text)}</pre>`);
+  printWindow.document.close();
+  printWindow.print();
 }
 
 function renderErrors() {
@@ -1518,6 +1707,10 @@ document.addEventListener("click", (event) => {
     navigate(`#/level/${target.dataset.track}/${target.dataset.level}`);
   } else if (action === "clear-errors") {
     clearErrors();
+  } else if (action === "copy-submission") {
+    copySubmission(target.dataset.id);
+  } else if (action === "print-submission") {
+    printSubmission(target.dataset.id);
   } else if (action === "reset-progress") {
     if (!session.confirmReset) {
       session.confirmReset = true;
