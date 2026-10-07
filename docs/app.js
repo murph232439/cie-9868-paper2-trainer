@@ -1,4 +1,4 @@
-import { TRACKS, LANGUAGE_LIBRARY, BOSS_PROMPTS, PRACTICE_BANK } from "./data.js?v=21";
+import { TRACKS, LANGUAGE_LIBRARY, BOSS_PROMPTS, PRACTICE_BANK, MOCK_PAPERS } from "./data.js?v=22";
 
 const LITERATURE_TRACK = {
   id: "literature",
@@ -106,6 +106,8 @@ let state = loadState();
 let session = freshSession();
 let bossTimerId = null;
 let bossSeconds = 20 * 60;
+let mockTimerId = null;
+let mockSeconds = 60 * 60;
 
 function loadState() {
   try {
@@ -144,7 +146,16 @@ function freshSession() {
     bossMode: "outline",
     bossFields: ["", "", "", ""],
     bossEssay: "",
-    bossChecks: [false, false, false, false, false]
+    bossChecks: [false, false, false, false, false],
+    mockUnlocked: false,
+    mockPassword: "",
+    mockPaperId: null,
+    mockStage: null,
+    mockEssayA: "",
+    mockEssayB: "",
+    mockTrackB: null,
+    mockDurationA: null,
+    mockDurationB: null
   };
 }
 
@@ -257,6 +268,7 @@ function render() {
   const route = window.location.hash || "#/home";
   const [, section = "home", first, second] = route.split("/");
 
+  if (!["mock", "mock-a", "mock-b"].includes(section)) stopMockTimer();
   if (section === "home") renderHome();
   else if (section === "track") renderTrack(first);
   else if (section === "level") renderLevel(first, second);
@@ -268,6 +280,9 @@ function render() {
   else if (section === "practice") renderPractice(first, second);
   else if (section === "complete") renderComplete(first);
   else if (section === "score") renderScore(first);
+  else if (section === "mock") renderMock();
+  else if (section === "mock-a") renderMockA(first);
+  else if (section === "mock-b") renderMockB(first);
   else renderHome();
 
   renderTopStats();
@@ -284,7 +299,10 @@ function renderHome() {
         <h1>今天想练哪一种写作？</h1>
         <p>先选题型，再进入训练地图。每过一关，都会得到一条可以马上用进作文的语言建议。</p>
       </div>
-      <button class="button primary" data-route="#/boss">${icon("swords")} 进入真题 Boss</button>
+      <div class="header-actions">
+        <button class="button" data-route="#/mock">${icon("timer")} 模考模式</button>
+        <button class="button primary" data-route="#/boss">${icon("swords")} 进入真题 Boss</button>
+      </div>
     </section>
 
     <section class="recommend-band">
@@ -329,6 +347,10 @@ function renderHome() {
         <button class="utility-card" data-route="#/boss">
           ${icon("timer", 24)}
           <span><strong>真题 Boss</strong><small>限时完成审题和提纲</small></span>
+        </button>
+        <button class="utility-card" data-route="#/mock">
+          ${icon("shield-check", 24)}
+          <span><strong>模拟考试</strong><small>密码进入，AB卷限时作答</small></span>
         </button>
       </div>
     </section>
@@ -1076,6 +1098,7 @@ function renderPractice(trackId, index) {
 function renderComplete(submissionId) {
   const submission = state.submissions.find((item) => item.id === submissionId);
   if (!submission) return renderHome();
+  if (submission.mode === "mock") return renderMockComplete(submission);
   const assessment = assessSubmission(submission);
 
   app.innerHTML = `
@@ -1111,8 +1134,52 @@ function matchCount(text, terms) {
   return terms.reduce((sum, term) => sum + (text.includes(term) ? 1 : 0), 0);
 }
 
-function assessSubmission(submission) {
-  const essay = submissionEssay(submission);
+function detectAiTraces(essay) {
+  const normalized = essay.toLowerCase().replace(/\s+/g, "");
+  const highConfidence = [
+    "作为一个人工智能",
+    "作为一个ai",
+    "作为语言模型",
+    "作为大语言模型",
+    "我是一名人工智能",
+    "我是人工智能助手",
+    "我的知识截止",
+    "我的训练数据",
+    "由人工智能生成",
+    "这是ai生成的",
+    "由chatgpt生成",
+    "我很乐意帮助你",
+    "下面我为你",
+    "请把你的问题告诉我"
+  ];
+  const suspiciousTemplates = [
+    "在当今这个日新月异的时代",
+    "随着社会的不断发展",
+    "在信息爆炸的今天",
+    "综上所述，我们不难发现",
+    "首先，其次，再次，最后",
+    "值得注意的是",
+    "不可否认的是",
+    "从某种意义上说",
+    "总而言之，",
+    "毋庸置疑的是",
+    "这不禁让我们深思",
+    "众所周知，"
+  ];
+  const highMatches = highConfidence.filter((term) => normalized.includes(term));
+  const templateMatches = suspiciousTemplates.filter((term) => normalized.includes(term));
+  const blocked = highMatches.length > 0;
+  const suspicious = !blocked && templateMatches.length >= 4;
+  return {
+    blocked,
+    suspicious,
+    needsReview: blocked || suspicious,
+    level: blocked ? "高置信度" : suspicious ? "疑似" : "未发现",
+    matches: [...new Set([...highMatches, ...templateMatches])]
+  };
+}
+
+function assessEssayText(trackId, essay) {
   const chars = countWritingCharacters(essay);
   const paragraphs = essay
     .split(/\n\s*\n/)
@@ -1130,6 +1197,32 @@ function assessSubmission(submission) {
   const formalConnectives = ["首先", "其次", "因此", "然而", "此外", "同时", "由此可见", "更重要的是", "一方面", "另一方面"];
   const transitionCount = matchCount(essay, formalConnectives);
   const personalPronouns = (essay.match(/我/g) ?? []).length;
+  const aiReview = detectAiTraces(essay);
+
+  if (aiReview.needsReview) {
+    return {
+      essay,
+      chars,
+      paragraphs: paragraphs.length,
+      sentences: sentences.length,
+      contentScore: 0,
+      linguisticScore: 0,
+      accuracyScore: 0,
+      totalScore: 0,
+      checks: [
+        {
+          label: "AI 痕迹初筛",
+          passed: false,
+          detail: aiReview.blocked ? "发现高置信度 AI 表达" : "发现多组疑似 AI 模板表达",
+          tip: "本篇暂不评分，请提交给老师复核。"
+        }
+      ],
+      suggestions: [
+        "系统检测到疑似 AI 写作痕迹。本篇成绩暂时记为 0 分，请把提交内容发给老师复核。"
+      ],
+      aiReview
+    };
+  }
 
   const trackSignals = {
     argument: {
@@ -1151,7 +1244,7 @@ function assessSubmission(submission) {
       closing: ["从此", "终于", "原来", "明白", "成长"]
     }
   };
-  const signals = trackSignals[submission.trackId] ?? trackSignals.argument;
+  const signals = trackSignals[trackId] ?? trackSignals.argument;
   const checks = [
     {
       label: "达到 350 字",
@@ -1175,7 +1268,7 @@ function assessSubmission(submission) {
       label: "有具体例子或细节",
       passed: matchCount(essay, signals.evidence) > 0,
       detail: matchCount(essay, signals.evidence) ? "找到细节信号" : "未识别到具体例子或细节",
-      tip: submission.trackId === "argument" ? "补一个具体、可辨认的例子，不能只说“很多人”“有些学生”。" : "补一处可看见、听见或感受到的细节。"
+      tip: trackId === "argument" ? "补一个具体、可辨认的例子，不能只说“很多人”“有些学生”。" : "补一处可看见、听见或感受到的细节。"
     },
     {
       label: "Explain 或感受有展开",
@@ -1236,23 +1329,85 @@ function assessSubmission(submission) {
     accuracyScore,
     totalScore,
     checks,
-    suggestions
+    suggestions,
+    aiReview
   };
 }
 
+function assessSubmission(submission) {
+  const essay = submission.essay ?? submissionEssay(submission);
+  return assessEssayText(submission.trackId, essay);
+}
+
+function renderMockComplete(submission) {
+  const paper = getMockPaper(submission.paperId);
+  const assessmentA = assessEssayText("argument", submission.essays?.A ?? "");
+  const assessmentB = assessEssayText(submission.mockTrackB ?? "description", submission.essays?.B ?? "");
+  const needsReview = assessmentA.aiReview?.needsReview || assessmentB.aiReview?.needsReview;
+
+  const renderPaperResult = (label, assessment, question) => `
+    <section class="mock-result-section">
+      <div class="mock-result-head">
+        <div>
+          <span class="chip">${escapeHtml(label)}</span>
+          <h3>${escapeHtml(question)}</h3>
+        </div>
+        <strong>${assessment.aiReview?.needsReview ? "暂不评分" : `${assessment.totalScore}/20`}</strong>
+      </div>
+      ${
+        assessment.aiReview?.needsReview
+          ? `<p class="ai-review-warning">${assessment.aiReview.blocked ? "发现高置信度 AI 表达" : "发现多组疑似 AI 模板表达"}。本篇暂时记为 0 分，请提交给老师复核。</p>`
+          : `<div class="score-summary-rubric">
+              <span>内容 ${assessment.contentScore}/8</span>
+              <span>语言与结构 ${assessment.linguisticScore}/6</span>
+              <span>准确性 ${assessment.accuracyScore}/6</span>
+            </div>`
+      }
+      <p class="muted">字数：${assessment.chars} · AI 痕迹初筛：${assessment.aiReview.level}</p>
+    </section>
+  `;
+
+  app.innerHTML = `
+    <section class="complete-view">
+      <canvas id="confettiCanvas" class="confetti-canvas" aria-hidden="true"></canvas>
+      <div class="complete-card mock-complete-card">
+        <div class="complete-icon">${icon("badge-check", 52)}</div>
+        <h1>模拟考试完成</h1>
+        <p class="complete-lead">${escapeHtml(submission.paperName)}已经交卷</p>
+        <p class="complete-question">Paper A + Paper B</p>
+        ${needsReview ? `<p class="ai-review-warning">本篇模考疑似包含 AI 写作痕迹，成绩暂不确认，请提交给老师复核。</p>` : ""}
+        ${renderPaperResult("Paper A", assessmentA, paper?.paperA.text ?? "")}
+        ${renderPaperResult("Paper B", assessmentB, paper && submission.mockTrackB ? paper.paperB[submission.mockTrackB].text : "")}
+        <div class="task-actions">
+          <button class="button primary" data-action="copy-score-report" data-id="${submission.id}">${icon("copy")} 复制模考报告</button>
+          <button class="button" data-action="print-score-report" data-id="${submission.id}">${icon("printer")} 打印</button>
+          <button class="button" data-action="email-submission" data-id="${submission.id}">${icon("mail")} 提交给老师</button>
+          <button class="button ghost" data-route="#/progress">${icon("clipboard-list")} 查看我的提交</button>
+        </div>
+      </div>
+    </section>
+  `;
+  window.requestAnimationFrame(startConfetti);
+}
+
 function renderScoreSummary(submission, assessment) {
+  const aiFlagged = assessment.aiReview?.needsReview;
   return `
     <div class="score-summary">
       <div class="score-summary-head">
-        <span class="chip">机器初评</span>
-        <strong>${assessment.totalScore}<small>/20</small></strong>
+        <span class="chip">${aiFlagged ? "待老师复核" : "机器初评"}</span>
+        <strong>${aiFlagged ? "暂不评分" : `${assessment.totalScore}<small>/20</small>`}</strong>
       </div>
-      <div class="score-summary-rubric">
-        <span>内容 Content ${assessment.contentScore}/8</span>
-        <span>语言范围与结构 ${assessment.linguisticScore}/6</span>
-        <span>语言准确性 ${assessment.accuracyScore}/6</span>
-      </div>
-      <p class="muted">机器只检查字数、结构、细节和常见语言信号。错别字、病句和观点深度需要老师终评。</p>
+      ${
+        aiFlagged
+          ? `<p class="ai-review-warning">系统检测到疑似 AI 写作痕迹，本篇暂时记为 0 分，请提交给老师复核。</p>`
+          : `<div class="score-summary-rubric">
+              <span>内容 Content ${assessment.contentScore}/8</span>
+              <span>语言范围与结构 ${assessment.linguisticScore}/6</span>
+              <span>语言准确性 ${assessment.accuracyScore}/6</span>
+            </div>
+            <p class="muted">机器只检查字数、结构、细节和常见语言信号。错别字、病句和观点深度需要老师终评。</p>`
+      }
       <button class="button" data-route="#/score/${submission.id}">${icon("clipboard-check")} 查看评分详情与修改建议</button>
     </div>
   `;
@@ -1261,7 +1416,9 @@ function renderScoreSummary(submission, assessment) {
 function renderScore(submissionId) {
   const submission = state.submissions.find((item) => item.id === submissionId);
   if (!submission) return renderHome();
+  if (submission.mode === "mock") return renderMockComplete(submission);
   const assessment = assessSubmission(submission);
+  const aiFlagged = assessment.aiReview?.needsReview;
 
   app.innerHTML = `
     <section class="page-header">
@@ -1273,9 +1430,12 @@ function renderScore(submissionId) {
     </section>
     <section class="score-detail">
       <div class="panel score-overview">
-        <p class="eyebrow">机器初评</p>
-        <div class="score-large">${assessment.totalScore}<span>/20</span></div>
-        <div class="score-rubric-grid">
+        <p class="eyebrow">${aiFlagged ? "待老师复核" : "机器初评"}</p>
+        <div class="score-large">${aiFlagged ? "暂不评分" : `${assessment.totalScore}<span>/20</span>`}</div>
+        ${
+          aiFlagged
+            ? `<p class="ai-review-warning">系统检测到疑似 AI 写作痕迹，本篇暂时记为 0 分，请提交给老师复核。</p>`
+            : `<div class="score-rubric-grid">
           ${[
             ["内容 Content", assessment.contentScore, 8, "是否扣题，例子和解释是否充分"],
             ["语言范围与结构", assessment.linguisticScore, 6, "段落、衔接和句子变化"],
@@ -1288,7 +1448,8 @@ function renderScore(submissionId) {
             </div>
           `).join("")}
         </div>
-        <div class="score-note">机器不会给语言准确性打满分，最高先显示 5/6，留 1 分给教师确认。</div>
+        <div class="score-note">机器不会给语言准确性打满分，最高先显示 5/6，留 1 分给教师确认。</div>`
+        }
       </div>
       <div class="panel">
         <h2>自动检查</h2>
@@ -1323,6 +1484,7 @@ function renderScore(submissionId) {
 function buildScoreReportText(id) {
   const submission = state.submissions.find((item) => item.id === id);
   if (!submission) return "";
+  if (submission.mode === "mock") return buildMockScoreReportText(id);
   const assessment = assessSubmission(submission);
   const checks = assessment.checks
     .map((check) => `${check.passed ? "通过" : "需改进"}：${check.label}（${check.detail}）`)
@@ -1345,8 +1507,41 @@ ${checks}
 修改建议：
 ${suggestions}
 
+${assessment.aiReview?.needsReview ? `AI 痕迹初筛：${assessment.aiReview.level}\n命中表达：${assessment.aiReview.matches.join("、") || "无"}\n处理结果：暂不评分，提交老师复核\n\n` : ""}
 本次全文：
 ${assessment.essay}`;
+}
+
+function buildMockScoreReportText(id) {
+  const submission = state.submissions.find((item) => item.id === id);
+  if (!submission) return "";
+  const paper = getMockPaper(submission.paperId);
+  const assessmentA = assessEssayText("argument", submission.essays?.A ?? "");
+  const assessmentB = assessEssayText(submission.mockTrackB ?? "description", submission.essays?.B ?? "");
+  const line = (label, value) => `${label}：${value}`;
+  return `训练类型：${submission.trackName}
+题目：${submission.question}
+完成时间：${submission.date}
+
+Paper A · 议论文 / 讨论文
+${paper ? line("题目", paper.paperA.text) : ""}
+字数：${assessmentA.chars}
+机器初评：${assessmentA.aiReview?.needsReview ? "0/20 · 暂不评分，提交老师复核" : `${assessmentA.totalScore}/20`}
+AI 痕迹初筛：${assessmentA.aiReview.level}
+命中表达：${assessmentA.aiReview.matches.join("、") || "无"}
+
+Paper B · ${mockTrackName(submission.mockTrackB)}
+${paper && submission.mockTrackB ? line("题目", paper.paperB[submission.mockTrackB].text) : ""}
+字数：${assessmentB.chars}
+机器初评：${assessmentB.aiReview?.needsReview ? "0/20 · 暂不评分，提交老师复核" : `${assessmentB.totalScore}/20`}
+AI 痕迹初筛：${assessmentB.aiReview.level}
+命中表达：${assessmentB.aiReview.matches.join("、") || "无"}
+
+Paper A 全文：
+${submission.essays?.A || "未填写"}
+
+Paper B 全文：
+${submission.essays?.B || "未填写"}`;
 }
 
 function copyScoreReport(id) {
@@ -1859,6 +2054,7 @@ function renderSubmissionCard(submission) {
   const answerText = submission.answers
     .map((item, index) => `${index + 1}. ${item.prompt}\n答：${item.answer || "未填写"}`)
     .join("\n\n");
+  const resultRoute = submission.mode === "mock" ? `#/complete/${submission.id}` : `#/score/${submission.id}`;
   return `
     <article class="submission-card">
       <div class="submission-head">
@@ -1868,7 +2064,7 @@ function renderSubmissionCard(submission) {
           <p class="muted">${escapeHtml(submission.date)} · ${submission.answers.length} 个作答步骤</p>
         </div>
         <div class="task-actions">
-          <button class="button" data-route="#/score/${submission.id}">${icon("clipboard-check")} 查看初评</button>
+          <button class="button" data-route="${resultRoute}">${icon("clipboard-check")} ${submission.mode === "mock" ? "查看模考结果" : "查看初评"}</button>
           <button class="button" data-action="copy-submission" data-id="${submission.id}">${icon("copy")} 复制全部</button>
           <button class="button ghost" data-action="print-submission" data-id="${submission.id}">${icon("printer")} 打印</button>
         </div>
@@ -2070,6 +2266,273 @@ function submitBoss() {
   toast(`${isOutline ? "提纲" : "全文"}已提交，获得 ${xp} XP。`);
 }
 
+function getMockPaper(paperId) {
+  return MOCK_PAPERS.find((paper) => paper.id === paperId);
+}
+
+function mockTrackName(trackId) {
+  if (trackId === "description") return "描写文";
+  if (trackId === "narrative") return "记叙文";
+  return "议论文 / 讨论文";
+}
+
+function stopMockTimer() {
+  window.clearInterval(mockTimerId);
+  mockTimerId = null;
+}
+
+function startMockTimer(onExpire) {
+  if (mockTimerId) return;
+  mockTimerId = window.setInterval(() => {
+    mockSeconds = Math.max(0, mockSeconds - 1);
+    const timer = document.querySelector("#mockTimer");
+    if (timer) timer.textContent = formatSeconds(mockSeconds);
+    if (mockSeconds === 0) {
+      stopMockTimer();
+      onExpire();
+    }
+  }, 1000);
+}
+
+function renderMock() {
+  stopMockTimer();
+  if (!session.mockUnlocked) {
+    app.innerHTML = `
+      <section class="mock-gate">
+        <div class="mock-gate-card">
+          <div class="complete-icon">${icon("shield-check", 46)}</div>
+          <h1>模拟考试</h1>
+          <p class="muted">本模式包含 Paper A 和 Paper B，请按考试要求独立完成。</p>
+          <label class="mock-password-field">
+            <span>考试密码</span>
+            <input type="password" data-action="mock-password" value="${escapeHtml(session.mockPassword)}" placeholder="请输入考试密码" autocomplete="off">
+          </label>
+          <button class="button primary wide" data-action="mock-unlock">${icon("lock-keyhole-open")} 进入模考</button>
+          <button class="inline-link" data-route="#/home">← 返回训练大厅</button>
+        </div>
+      </section>
+    `;
+    return;
+  }
+
+  app.innerHTML = `
+    <section class="page-header">
+      <div class="page-title">
+        <button class="inline-link" data-route="#/home">← 返回训练大厅</button>
+        <h1>选择模拟卷</h1>
+        <p>每套模拟卷都包含 Paper A 和 Paper B。选好试卷后先完成 Paper A，再进入 Paper B。</p>
+      </div>
+    </section>
+    <section class="mock-paper-grid">
+      ${MOCK_PAPERS.map((paper) => `
+        <article class="mock-paper-card">
+          <span class="chip">${escapeHtml(paper.name)}</span>
+          <h2>Paper 2 写作模拟</h2>
+          <p>A 卷：议论文 / 讨论文，350–500 字，最多 700 字。</p>
+          <p>B 卷：描写文或记叙文，二选一。</p>
+          <button class="button primary wide" data-route="#/mock-a/${paper.id}">${icon("play")} 开始这套模拟卷</button>
+        </article>
+      `).join("")}
+    </section>
+  `;
+}
+
+function renderMockA(paperId) {
+  const paper = getMockPaper(paperId);
+  if (!session.mockUnlocked || !paper) {
+    navigate("#/mock");
+    return;
+  }
+  if (session.mockPaperId !== paperId || session.mockStage !== "a") {
+    session = {
+      ...freshSession(),
+      mockUnlocked: true,
+      mockPaperId: paperId,
+      mockStage: "a"
+    };
+  }
+  mockSeconds = 60 * 60;
+  stopMockTimer();
+  const essayLength = countWritingCharacters(session.mockEssayA);
+
+  app.innerHTML = `
+    <section class="page-header">
+      <div class="page-title">
+        <button class="inline-link" data-route="#/mock">← 返回选择模拟卷</button>
+        <h1>${escapeHtml(paper.name)} · Paper A</h1>
+        <p>议论文 / 讨论文。目标 350–500 字，最多 700 字。可以提前交卷。</p>
+      </div>
+    </section>
+    <section class="mock-exam-layout">
+      <aside class="mock-timer-panel">
+        <p class="eyebrow">剩余时间</p>
+        <div class="timer-display" id="mockTimer">${formatSeconds(mockSeconds)}</div>
+        <p class="muted">1 小时倒计时，时间到会自动交卷。</p>
+      </aside>
+      <div class="panel mock-writing-panel">
+        <div class="mock-question">
+          <span class="chip">Paper A</span>
+          <p>${escapeHtml(paper.paperA.text)}</p>
+        </div>
+        <textarea class="answer-area essay-area" data-action="mock-essay-a" placeholder="在这里写全文……">${escapeHtml(session.mockEssayA)}</textarea>
+        <p class="muted">当前字数：<strong id="mockEssayCount">${essayLength}</strong> / 目标 350–500 字 · 最多 700 字</p>
+        <div class="task-actions">
+          <button class="button warm" data-action="submit-mock-a">${icon("send")} 提前交 Paper A</button>
+        </div>
+      </div>
+    </section>
+  `;
+  window.setTimeout(() => startMockTimer(() => submitMockA(false)), 0);
+}
+
+function renderMockB(paperId) {
+  const paper = getMockPaper(paperId);
+  if (!session.mockUnlocked || !paper || !session.mockEssayA) {
+    navigate("#/mock-a/" + (paper?.id ?? "mock-1"));
+    return;
+  }
+  if (session.mockPaperId !== paperId || session.mockStage !== "b") {
+    const essayA = session.mockEssayA;
+    const durationA = session.mockDurationA;
+    session = {
+      ...freshSession(),
+      mockUnlocked: true,
+      mockPaperId: paperId,
+      mockStage: "b",
+      mockEssayA: essayA,
+      mockDurationA: durationA
+    };
+  }
+  stopMockTimer();
+  const selected = session.mockTrackB;
+  const bQuestion = selected ? paper.paperB[selected]?.text : "";
+  const essayLength = countWritingCharacters(session.mockEssayB);
+
+  app.innerHTML = `
+    <section class="page-header">
+      <div class="page-title">
+        <button class="inline-link" data-route="#/mock">← 返回选择模拟卷</button>
+        <h1>${escapeHtml(paper.name)} · Paper B</h1>
+        <p>描写文或记叙文二选一。点击题型后开始 1 小时倒计时。</p>
+      </div>
+    </section>
+    ${
+      !selected
+        ? `<section class="mock-choice-grid">
+            <button class="mock-choice-card" data-action="mock-choose-b" data-track="description">
+              ${icon("image", 34)}
+              <strong>描写文</strong>
+              <span>观察对象、五感细节、描写顺序、借景抒情</span>
+            </button>
+            <button class="mock-choice-card" data-action="mock-choose-b" data-track="narrative">
+              ${icon("route", 34)}
+              <strong>记叙文</strong>
+              <span>六要素、冲突转折、人物描写、结尾升华</span>
+            </button>
+          </section>`
+        : `<section class="mock-exam-layout">
+            <aside class="mock-timer-panel">
+              <p class="eyebrow">剩余时间</p>
+              <div class="timer-display" id="mockTimer">${formatSeconds(mockSeconds)}</div>
+              <p class="muted">1 小时倒计时，时间到会自动交卷。</p>
+            </aside>
+            <div class="panel mock-writing-panel">
+              <div class="mock-question">
+                <span class="chip">${mockTrackName(selected)}</span>
+                <p>${escapeHtml(bQuestion)}</p>
+              </div>
+              <textarea class="answer-area essay-area" data-action="mock-essay-b" placeholder="在这里写全文……">${escapeHtml(session.mockEssayB)}</textarea>
+              <p class="muted">当前字数：<strong id="mockEssayCount">${essayLength}</strong> / 目标 350–500 字 · 最多 700 字</p>
+              <div class="task-actions">
+                <button class="button warm" data-action="submit-mock-b">${icon("send")} 提前交 Paper B</button>
+              </div>
+            </div>
+          </section>`
+    }
+  `;
+  if (selected) {
+    window.setTimeout(() => startMockTimer(() => submitMockB(false)), 0);
+  }
+}
+
+function submitMockA(manual = true) {
+  const chars = countWritingCharacters(session.mockEssayA);
+  if (manual && chars < 350) {
+    toast(`Paper A 还差 ${350 - chars} 字。`);
+    return;
+  }
+  if (manual && chars > 700) {
+    toast("Paper A 最多 700 字，请删减后再提交。");
+    return;
+  }
+  stopMockTimer();
+  session.mockDurationA = Math.min(3600, Math.max(0, 3600 - mockSeconds));
+  session.mockStage = "b";
+  navigate(`#/mock-b/${session.mockPaperId}`);
+}
+
+function submitMockB(manual = true) {
+  const paper = getMockPaper(session.mockPaperId);
+  const trackId = session.mockTrackB;
+  if (!paper || !trackId) return;
+  const chars = countWritingCharacters(session.mockEssayB);
+  if (manual && chars < 350) {
+    toast(`Paper B 还差 ${350 - chars} 字。`);
+    return;
+  }
+  if (manual && chars > 700) {
+    toast("Paper B 最多 700 字，请删减后再提交。");
+    return;
+  }
+  stopMockTimer();
+  session.mockDurationB = Math.min(3600, Math.max(0, 3600 - mockSeconds));
+  const id = `${Date.now()}-${paper.id}`;
+  const submission = {
+    id,
+    mode: "mock",
+    trackId: "mock",
+    trackName: paper.name,
+    question: `${paper.name} · Paper A + Paper B`,
+    levelTitle: "模拟考试",
+    paperId: paper.id,
+    paperName: paper.name,
+    mockTrackB: trackId,
+    date: new Date().toLocaleString("zh-CN", { hour12: false }),
+    answers: [
+      {
+        prompt: "Paper A · 议论文 / 讨论文",
+        answer: session.mockEssayA.trim()
+      },
+      {
+        prompt: `Paper B · ${mockTrackName(trackId)}`,
+        answer: session.mockEssayB.trim()
+      }
+    ],
+    essays: {
+      A: session.mockEssayA.trim(),
+      B: session.mockEssayB.trim()
+    },
+    durations: {
+      A: session.mockDurationA,
+      B: session.mockDurationB
+    },
+    autoSubmitted: !manual
+  };
+  state.submissions.unshift(submission);
+  state.submissions = state.submissions.slice(0, 30);
+  state.xp += 100;
+  state.history.unshift({
+    date: new Date().toLocaleString("zh-CN", { hour12: false }),
+    text: `完成模考：${paper.name}`,
+    xp: 100
+  });
+  state.history = state.history.slice(0, 30);
+  touchStreak();
+  saveState();
+  toast(manual ? "模考已交卷，获得 100 XP。" : "时间到，模考已自动交卷。");
+  navigate(`#/complete/${id}`);
+}
+
 function clearErrors() {
   state.mistakes = [];
   saveState();
@@ -2200,6 +2663,25 @@ document.addEventListener("click", (event) => {
     if (timer) timer.textContent = formatSeconds(bossSeconds);
   } else if (action === "boss-submit") {
     submitBoss();
+  } else if (action === "mock-unlock") {
+    if (session.mockPassword.trim() === "CIE9868") {
+      session.mockUnlocked = true;
+      session.mockPassword = "";
+      render();
+      toast("密码正确，请选择模拟卷。");
+    } else {
+      toast("密码错误。");
+    }
+  } else if (action === "mock-choose-b") {
+    if (session.mockTrackB) return;
+    session.mockTrackB = target.dataset.track;
+    session.mockEssayB = "";
+    mockSeconds = 60 * 60;
+    render();
+  } else if (action === "submit-mock-a") {
+    submitMockA(true);
+  } else if (action === "submit-mock-b") {
+    submitMockB(true);
   }
 });
 
@@ -2227,6 +2709,16 @@ document.addEventListener("input", (event) => {
     session.bossEssay = target.value;
     const count = document.querySelector("#essayCount");
     if (count) count.textContent = String(countWritingCharacters(session.bossEssay));
+  } else if (target.dataset.action === "mock-password") {
+    session.mockPassword = target.value;
+  } else if (target.dataset.action === "mock-essay-a") {
+    session.mockEssayA = target.value;
+    const count = document.querySelector("#mockEssayCount");
+    if (count) count.textContent = String(countWritingCharacters(session.mockEssayA));
+  } else if (target.dataset.action === "mock-essay-b") {
+    session.mockEssayB = target.value;
+    const count = document.querySelector("#mockEssayCount");
+    if (count) count.textContent = String(countWritingCharacters(session.mockEssayB));
   }
 });
 
