@@ -1,4 +1,4 @@
-import { TRACKS, LANGUAGE_LIBRARY, BOSS_PROMPTS, PRACTICE_BANK, MOCK_PAPERS } from "./data.js?v=22";
+import { TRACKS, LANGUAGE_LIBRARY, BOSS_PROMPTS, PRACTICE_BANK, MOCK_PAPERS } from "./data.js?v=23";
 
 const LITERATURE_TRACK = {
   id: "literature",
@@ -155,7 +155,9 @@ function freshSession() {
     mockEssayB: "",
     mockTrackB: null,
     mockDurationA: null,
-    mockDurationB: null
+    mockDurationB: null,
+    mockSubmissionAId: null,
+    mockSubmissionBId: null
   };
 }
 
@@ -1344,8 +1346,10 @@ function renderMockComplete(submission) {
   const assessmentA = assessEssayText("argument", submission.essays?.A ?? "");
   const assessmentB = assessEssayText(submission.mockTrackB ?? "description", submission.essays?.B ?? "");
   const needsReview = assessmentA.aiReview?.needsReview || assessmentB.aiReview?.needsReview;
+  const partAId = submission.partIds?.[0] ?? "";
+  const partBId = submission.partIds?.[1] ?? "";
 
-  const renderPaperResult = (label, assessment, question) => `
+  const renderPaperResult = (label, assessment, question, partId) => `
     <section class="mock-result-section">
       <div class="mock-result-head">
         <div>
@@ -1364,6 +1368,9 @@ function renderMockComplete(submission) {
             </div>`
       }
       <p class="muted">字数：${assessment.chars} · AI 痕迹初筛：${assessment.aiReview.level}</p>
+      <div class="task-actions">
+        <button class="button" data-action="email-submission" data-id="${partId}">${icon("mail")} 发送本篇评分给老师</button>
+      </div>
     </section>
   `;
 
@@ -1376,12 +1383,12 @@ function renderMockComplete(submission) {
         <p class="complete-lead">${escapeHtml(submission.paperName)}已经交卷</p>
         <p class="complete-question">Paper A + Paper B</p>
         ${needsReview ? `<p class="ai-review-warning">本篇模考疑似包含 AI 写作痕迹，成绩暂不确认，请提交给老师复核。</p>` : ""}
-        ${renderPaperResult("Paper A", assessmentA, paper?.paperA.text ?? "")}
-        ${renderPaperResult("Paper B", assessmentB, paper && submission.mockTrackB ? paper.paperB[submission.mockTrackB].text : "")}
+        ${renderPaperResult("Paper A", assessmentA, paper?.paperA.text ?? "", partAId)}
+        ${renderPaperResult("Paper B", assessmentB, paper && submission.mockTrackB ? paper.paperB[submission.mockTrackB].text : "", partBId)}
         <div class="task-actions">
           <button class="button primary" data-action="copy-score-report" data-id="${submission.id}">${icon("copy")} 复制模考报告</button>
           <button class="button" data-action="print-score-report" data-id="${submission.id}">${icon("printer")} 打印</button>
-          <button class="button" data-action="email-submission" data-id="${submission.id}">${icon("mail")} 提交给老师</button>
+          <button class="button warm" data-action="email-submission" data-id="${submission.id}">${icon("mail")} 发送完整模考报告给老师</button>
           <button class="button ghost" data-route="#/progress">${icon("clipboard-list")} 查看我的提交</button>
         </div>
       </div>
@@ -2394,13 +2401,15 @@ function renderMockB(paperId) {
   if (session.mockPaperId !== paperId || session.mockStage !== "b") {
     const essayA = session.mockEssayA;
     const durationA = session.mockDurationA;
+    const submissionAId = session.mockSubmissionAId;
     session = {
       ...freshSession(),
       mockUnlocked: true,
       mockPaperId: paperId,
       mockStage: "b",
       mockEssayA: essayA,
-      mockDurationA: durationA
+      mockDurationA: durationA,
+      mockSubmissionAId: submissionAId
     };
   }
   stopMockTimer();
@@ -2422,12 +2431,12 @@ function renderMockB(paperId) {
             <button class="mock-choice-card" data-action="mock-choose-b" data-track="description">
               ${icon("image", 34)}
               <strong>描写文</strong>
-              <span>观察对象、五感细节、描写顺序、借景抒情</span>
+              <span class="mock-choice-question">${escapeHtml(paper.paperB.description.text)}</span>
             </button>
             <button class="mock-choice-card" data-action="mock-choose-b" data-track="narrative">
               ${icon("route", 34)}
               <strong>记叙文</strong>
-              <span>六要素、冲突转折、人物描写、结尾升华</span>
+              <span class="mock-choice-question">${escapeHtml(paper.paperB.narrative.text)}</span>
             </button>
           </section>`
         : `<section class="mock-exam-layout">
@@ -2455,7 +2464,40 @@ function renderMockB(paperId) {
   }
 }
 
+function saveMockPartSubmission(paper, stage, trackId, essay, duration) {
+  const question = stage === "A" ? paper.paperA.text : paper.paperB[trackId]?.text ?? "";
+  const trackName = stage === "A" ? "议论文 / 讨论文" : mockTrackName(trackId);
+  const id = `${Date.now()}-${paper.id}-${stage}`;
+  const submission = {
+    id,
+    mode: "mock-part",
+    paperId: paper.id,
+    paperName: paper.name,
+    examStage: stage,
+    trackId,
+    trackName: `${paper.name} · Paper ${stage}`,
+    question,
+    levelTitle: `Paper ${stage}`,
+    date: new Date().toLocaleString("zh-CN", { hour12: false }),
+    answers: [
+      {
+        prompt: `Paper ${stage} · ${trackName}`,
+        answer: essay.trim()
+      }
+    ],
+    essay: essay.trim(),
+    assessment: assessEssayText(trackId, essay.trim()),
+    duration
+  };
+  state.submissions.unshift(submission);
+  state.submissions = state.submissions.slice(0, 40);
+  saveState();
+  return id;
+}
+
 function submitMockA(manual = true) {
+  const paper = getMockPaper(session.mockPaperId);
+  if (!paper) return;
   const chars = countWritingCharacters(session.mockEssayA);
   if (manual && chars < 350) {
     toast(`Paper A 还差 ${350 - chars} 字。`);
@@ -2467,7 +2509,15 @@ function submitMockA(manual = true) {
   }
   stopMockTimer();
   session.mockDurationA = Math.min(3600, Math.max(0, 3600 - mockSeconds));
+  session.mockSubmissionAId = saveMockPartSubmission(
+    paper,
+    "A",
+    "argument",
+    session.mockEssayA,
+    session.mockDurationA
+  );
   session.mockStage = "b";
+  toast("Paper A 已保存并完成初评。");
   navigate(`#/mock-b/${session.mockPaperId}`);
 }
 
@@ -2486,6 +2536,13 @@ function submitMockB(manual = true) {
   }
   stopMockTimer();
   session.mockDurationB = Math.min(3600, Math.max(0, 3600 - mockSeconds));
+  session.mockSubmissionBId = saveMockPartSubmission(
+    paper,
+    "B",
+    trackId,
+    session.mockEssayB,
+    session.mockDurationB
+  );
   const id = `${Date.now()}-${paper.id}`;
   const submission = {
     id,
@@ -2496,6 +2553,7 @@ function submitMockB(manual = true) {
     levelTitle: "模拟考试",
     paperId: paper.id,
     paperName: paper.name,
+    partIds: [session.mockSubmissionAId, session.mockSubmissionBId],
     mockTrackB: trackId,
     date: new Date().toLocaleString("zh-CN", { hour12: false }),
     answers: [
