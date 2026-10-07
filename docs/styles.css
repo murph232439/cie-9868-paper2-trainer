@@ -1213,6 +1213,19 @@ select:focus-visible {
   margin: -2px 0 14px;
 }
 
+.draft-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: -2px 0 14px;
+}
+
+.outline-chip {
+  margin-left: 6px;
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+
 .score-summary {
   width: 100%;
   margin: 24px 0 0;

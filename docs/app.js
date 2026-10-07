@@ -1,4 +1,4 @@
-import { TRACKS, LANGUAGE_LIBRARY, BOSS_PROMPTS, PRACTICE_BANK, MOCK_PAPERS } from "./data.js?v=24";
+import { TRACKS, LANGUAGE_LIBRARY, BOSS_PROMPTS, PRACTICE_BANK, MOCK_PAPERS } from "./data.js?v=25";
 
 const LITERATURE_TRACK = {
   id: "literature",
@@ -142,6 +142,7 @@ function freshSession() {
     practiceMode: false,
     practiceLevel: null,
     stepAnswers: [],
+    ideaSubmitted: false,
     bossPrompt: BOSS_PROMPTS[0],
     bossMode: "outline",
     bossFields: ["", "", "", ""],
@@ -561,7 +562,14 @@ function renderLevelView(track, level) {
         <h2>${escapeHtml(step.prompt)}</h2>
         ${
           step.assemble && !session.checked
-            ? `<button class="button ghost draft-assemble" data-action="assemble-essay">${icon("sparkles")} 用前面答案生成全文草稿</button>`
+            ? `<div class="draft-toolbar">
+                <button class="button ghost" data-action="assemble-essay">${icon("sparkles")} 用前面答案生成全文草稿</button>
+                ${
+                  session.practiceMode
+                    ? `<button class="button" data-action="submit-practice-idea" ${session.ideaSubmitted ? "disabled" : ""}>${icon(session.ideaSubmitted ? "circle-check" : "send")} ${session.ideaSubmitted ? "思路已保存" : "提交当前思路（不评分）"}</button>`
+                    : ""
+                }
+              </div>`
             : ""
         }
         ${renderStepInput(step)}
@@ -761,6 +769,7 @@ function makePracticeLevel(trackId, index) {
         context,
         prompt: "现在把提纲写成一整篇文章，目标 350–500 字。",
         minChars: 350,
+        maxChars: 700,
         assemble: "argument",
         sample: "首段交代背景并亮出立场，中间两段分别用反方观点、例子和 Explain 展开，结尾总结、点题并升华。",
         explanation: "完整文章要包含首段、两到三个主体段和结尾，不能只列提纲。",
@@ -821,6 +830,7 @@ function makePracticeLevel(trackId, index) {
         context,
         prompt: "现在把前面的观察和感受写成一篇完整描写文，目标 350–500 字。",
         minChars: 350,
+        maxChars: 700,
         assemble: "description",
         sample: "开头交代观察对象和环境，中间按时间或空间顺序展开两到三个细节层，结尾借景抒情。",
         explanation: "描写文以描写为主，叙事只作为辅助，不能写成流水账。",
@@ -879,6 +889,7 @@ function makePracticeLevel(trackId, index) {
         context,
         prompt: "现在把事件写成一篇完整记叙文，目标 350–500 字。",
         minChars: 350,
+        maxChars: 700,
         assemble: "narrative",
         sample: "开头交代六要素，中间推进事件并突出冲突和转折，结尾交代结果并点题升华。",
         explanation: "记叙文要围绕一个中心事件，重点写关键选择和人物变化。",
@@ -1075,6 +1086,54 @@ function assembleEssay() {
   session.checked = false;
   render();
   toast("草稿已生成。请继续把标出的部分补写完整。");
+}
+
+function submitPracticeIdea() {
+  if (session.ideaSubmitted) return;
+  const track = getTrack(session.trackId);
+  const level = currentLevel();
+  if (!track || !level) return;
+  const previousAnswers = (session.stepAnswers ?? []).filter(Boolean);
+  const partialEssay = session.text.trim();
+  if (!previousAnswers.length && !partialEssay) {
+    toast("先写一点思路，再提交保存。");
+    return;
+  }
+  const answers = [
+    ...previousAnswers,
+    ...(partialEssay
+      ? [
+          {
+            prompt: "全文草稿（未完成）",
+            answer: partialEssay
+          }
+        ]
+      : [])
+  ];
+  const id = `${Date.now()}-idea-${session.trackId}`;
+  const submission = {
+    id,
+    mode: "outline",
+    trackId: track.id,
+    trackName: `${track.name} · 思路提交`,
+    question: session.practicePrompt ?? level.summary,
+    levelTitle: level.title,
+    date: new Date().toLocaleString("zh-CN", { hour12: false }),
+    answers,
+    ungraded: true
+  };
+  state.submissions.unshift(submission);
+  state.submissions = state.submissions.slice(0, 40);
+  state.history.unshift({
+    date: new Date().toLocaleString("zh-CN", { hour12: false }),
+    text: `提交写作思路：${(session.practicePrompt ?? level.title).slice(0, 24)}……`,
+    xp: 0
+  });
+  state.history = state.history.slice(0, 30);
+  session.ideaSubmitted = true;
+  saveState();
+  render();
+  toast("写作思路已保存。本部分不评分。");
 }
 
 function renderPractice(trackId, index) {
@@ -1518,6 +1577,7 @@ function renderScore(submissionId) {
   const submission = state.submissions.find((item) => item.id === submissionId);
   if (!submission) return renderHome();
   if (submission.mode === "mock") return renderMockComplete(submission);
+  if (submission.mode === "outline") return renderProgress();
   const assessment = assessSubmission(submission);
   const aiFlagged = assessment.aiReview?.needsReview || assessment.relevance?.offTopic;
   const blockedMessage = assessment.relevance?.offTopic
@@ -1782,7 +1842,7 @@ function renderStepInput(step) {
   if (step.kind === "text") {
     return `
       <textarea class="answer-area" data-action="update-text" placeholder="${escapeHtml(step.placeholder ?? "在这里写下你的答案……")}">${escapeHtml(session.text)}</textarea>
-      <p class="muted">至少写 ${step.minChars} 个字。系统会检查关键词，但不会替你写答案。</p>
+      <p class="muted">至少写 ${step.minChars} 个字${step.maxChars ? `，最多 ${step.maxChars} 字` : ""}。系统会检查关键词，但不会替你写答案。</p>
     `;
   }
   if (step.kind === "order") {
@@ -1869,6 +1929,7 @@ function evaluateStep(step) {
   if (step.kind === "text") {
     const text = session.text.trim();
     if (text.length < step.minChars) return false;
+    if (step.maxChars && countWritingCharacters(text) > step.maxChars) return false;
     return (step.keywords ?? []).every((keyword) => text.includes(keyword));
   }
   return false;
@@ -2165,17 +2226,19 @@ function renderSubmissionCard(submission) {
   const answerText = submission.answers
     .map((item, index) => `${index + 1}. ${item.prompt}\n答：${item.answer || "未填写"}`)
     .join("\n\n");
+  const isIdea = submission.mode === "outline";
   const resultRoute = submission.mode === "mock" ? `#/complete/${submission.id}` : `#/score/${submission.id}`;
   return `
     <article class="submission-card">
       <div class="submission-head">
         <div>
           <span class="chip">${escapeHtml(submission.trackName)}</span>
+          ${isIdea ? `<span class="chip outline-chip">不评分</span>` : ""}
           <strong>${escapeHtml(submission.question)}</strong>
           <p class="muted">${escapeHtml(submission.date)} · ${submission.answers.length} 个作答步骤</p>
         </div>
         <div class="task-actions">
-          <button class="button" data-route="${resultRoute}">${icon("clipboard-check")} ${submission.mode === "mock" ? "查看模考结果" : "查看初评"}</button>
+          ${isIdea ? "" : `<button class="button" data-route="${resultRoute}">${icon("clipboard-check")} ${submission.mode === "mock" ? "查看模考结果" : "查看初评"}</button>`}
           <button class="button" data-action="copy-submission" data-id="${submission.id}">${icon("copy")} 复制全部</button>
           <button class="button ghost" data-action="print-submission" data-id="${submission.id}">${icon("printer")} 打印</button>
         </div>
@@ -2194,7 +2257,7 @@ function buildSubmissionText(id) {
   const answers = submission.answers
     .map((item, index) => `${index + 1}. ${item.prompt}\n答：${item.answer || "未填写"}`)
     .join("\n\n");
-  return `训练类型：${submission.trackName}\n题目：${submission.question}\n完成时间：${submission.date}\n\n${answers}`;
+  return `训练类型：${submission.trackName}${submission.mode === "outline" ? "\n评分状态：思路提交，不评分" : ""}\n题目：${submission.question}\n完成时间：${submission.date}\n\n${answers}`;
 }
 
 function copySubmission(id) {
@@ -2772,6 +2835,8 @@ document.addEventListener("click", (event) => {
     nextStep();
   } else if (action === "assemble-essay") {
     assembleEssay();
+  } else if (action === "submit-practice-idea") {
+    submitPracticeIdea();
   } else if (action === "clear-step") {
     resetStepState();
     render();
