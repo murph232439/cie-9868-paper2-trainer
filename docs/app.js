@@ -1,4 +1,4 @@
-import { TRACKS, LANGUAGE_LIBRARY, BOSS_PROMPTS, PRACTICE_BANK, MOCK_PAPERS } from "./data.js?v=23";
+import { TRACKS, LANGUAGE_LIBRARY, BOSS_PROMPTS, PRACTICE_BANK, MOCK_PAPERS } from "./data.js?v=24";
 
 const LITERATURE_TRACK = {
   id: "literature",
@@ -1181,7 +1181,55 @@ function detectAiTraces(essay) {
   };
 }
 
-function assessEssayText(trackId, essay) {
+const QUESTION_STOP_CHARS = new Set(
+  "的了是你在有和与及到从上下中请写一篇叙述描写记叙议论讨论作为以这那个些等如何怎么看同意应该不需要可能得时候里外都就还也而但却被让使对之于其每各所着过了"
+    .split("")
+);
+
+function questionKeywordGrams(question) {
+  const cleaned = String(question ?? "")
+    .replace(/你同意吗[？?]?/g, "")
+    .replace(/请讨论[。]?/g, "")
+    .replace(/谈谈你的看法[。]?/g, "")
+    .replace(/你怎么看[？?]?/g, "")
+    .replace(/写一篇(记叙文|描写文|议论文|讨论文)/g, "")
+    .replace(/为开头|为结尾|请以/g, "")
+    .replace(/[^\u4e00-\u9fff]+/g, "|");
+  const grams = new Set();
+  for (const segment of cleaned.split("|")) {
+    if (segment.length < 2) continue;
+    for (let start = 0; start < segment.length; start++) {
+      for (const size of [2, 3]) {
+        if (start + size > segment.length) continue;
+        const gram = segment.slice(start, start + size);
+        if ([...gram].some((char) => !QUESTION_STOP_CHARS.has(char))) grams.add(gram);
+      }
+    }
+  }
+  return [...grams];
+}
+
+function assessQuestionRelevance(question, essay) {
+  const grams = questionKeywordGrams(question);
+  const normalizedEssay = essay.replace(/\s+/g, "");
+  const matchedGrams = grams.filter((gram) => normalizedEssay.includes(gram));
+  const strongMatches = matchedGrams.filter((gram) => gram.length === 3).length;
+  const coverage = grams.length ? matchedGrams.length / grams.length : 1;
+  const offTopic = grams.length > 0 && (matchedGrams.length === 0 || (coverage < 0.12 && strongMatches === 0));
+  const partiallyRelevant = !offTopic && (coverage < 0.35 || matchedGrams.length < 2);
+  const fullyRelevant = !offTopic && (coverage >= 0.45 || matchedGrams.length >= 4);
+  return {
+    matched: matchedGrams.length,
+    total: grams.length,
+    coverage,
+    offTopic,
+    partiallyRelevant,
+    fullyRelevant,
+    label: offTopic ? "完全跑题" : partiallyRelevant ? "部分相关" : fullyRelevant ? "高度扣题" : "基本扣题"
+  };
+}
+
+function assessEssayText(trackId, essay, question = "") {
   const chars = countWritingCharacters(essay);
   const paragraphs = essay
     .split(/\n\s*\n/)
@@ -1200,6 +1248,7 @@ function assessEssayText(trackId, essay) {
   const transitionCount = matchCount(essay, formalConnectives);
   const personalPronouns = (essay.match(/我/g) ?? []).length;
   const aiReview = detectAiTraces(essay);
+  const relevance = assessQuestionRelevance(question, essay);
 
   if (aiReview.needsReview) {
     return {
@@ -1222,6 +1271,32 @@ function assessEssayText(trackId, essay) {
       suggestions: [
         "系统检测到疑似 AI 写作痕迹。本篇成绩暂时记为 0 分，请把提交内容发给老师复核。"
       ],
+      aiReview
+    };
+  }
+
+  if (relevance.offTopic) {
+    return {
+      essay,
+      chars,
+      paragraphs: paragraphs.length,
+      sentences: sentences.length,
+      contentScore: 0,
+      linguisticScore: 0,
+      accuracyScore: 0,
+      totalScore: 0,
+      checks: [
+        {
+          label: "题目相关度",
+          passed: false,
+          detail: `未识别到题目核心内容，命中 ${relevance.matched}/${relevance.total} 个关键词`,
+          tip: "这篇文章没有回应题目，Content 和语言部分都按 Mark Scheme 记为 0 分。"
+        }
+      ],
+      suggestions: [
+        "先回到题目，把核心概念和限定条件明确写进首段，再围绕题目重新组织全文。"
+      ],
+      relevance,
       aiReview
     };
   }
@@ -1262,9 +1337,9 @@ function assessEssayText(trackId, essay) {
     },
     {
       label: "扣住题目核心",
-      passed: matchCount(essay, signals.core) > 0,
-      detail: matchCount(essay, signals.core) ? "找到扣题信号" : "未识别到扣题信号",
-      tip: "在首段明确写出题目核心词和你的立场或观察对象。"
+      passed: relevance.fullyRelevant || relevance.coverage >= 0.35,
+      detail: `${relevance.label} · 命中 ${relevance.matched}/${relevance.total} 个题目关键词`,
+      tip: "把题目核心词和限定条件写进首段，并在每个主体段回扣。"
     },
     {
       label: "有具体例子或细节",
@@ -1301,6 +1376,8 @@ function assessEssayText(trackId, essay) {
   let contentScore = chars >= 500 ? 6 : chars >= 350 ? 5 : chars >= 250 ? 3 : 1;
   if (matchCount(essay, signals.core) > 0) contentScore += 1;
   if (matchCount(essay, signals.evidence) > 0 && matchCount(essay, signals.explain) > 0) contentScore += 1;
+  if (relevance.fullyRelevant) contentScore += 1;
+  if (relevance.partiallyRelevant) contentScore = Math.min(contentScore, 4);
   contentScore = Math.min(8, contentScore);
 
   let linguisticScore = paragraphs.length >= 3 ? 3 : paragraphs.length >= 2 ? 2 : 1;
@@ -1332,47 +1409,61 @@ function assessEssayText(trackId, essay) {
     totalScore,
     checks,
     suggestions,
-    aiReview
+    aiReview,
+    relevance
   };
 }
 
 function assessSubmission(submission) {
   const essay = submission.essay ?? submissionEssay(submission);
-  return assessEssayText(submission.trackId, essay);
+  return assessEssayText(submission.trackId, essay, submission.question);
 }
 
 function renderMockComplete(submission) {
   const paper = getMockPaper(submission.paperId);
-  const assessmentA = assessEssayText("argument", submission.essays?.A ?? "");
-  const assessmentB = assessEssayText(submission.mockTrackB ?? "description", submission.essays?.B ?? "");
+  const assessmentA = assessEssayText("argument", submission.essays?.A ?? "", paper?.paperA.text ?? "");
+  const assessmentB = assessEssayText(
+    submission.mockTrackB ?? "description",
+    submission.essays?.B ?? "",
+    paper && submission.mockTrackB ? paper.paperB[submission.mockTrackB].text : ""
+  );
   const needsReview = assessmentA.aiReview?.needsReview || assessmentB.aiReview?.needsReview;
   const partAId = submission.partIds?.[0] ?? "";
   const partBId = submission.partIds?.[1] ?? "";
 
-  const renderPaperResult = (label, assessment, question, partId) => `
+  const renderPaperResult = (label, assessment, question, partId) => {
+    const flagged = assessment.aiReview?.needsReview || assessment.relevance?.offTopic;
+    return `
     <section class="mock-result-section">
       <div class="mock-result-head">
         <div>
           <span class="chip">${escapeHtml(label)}</span>
           <h3>${escapeHtml(question)}</h3>
         </div>
-        <strong>${assessment.aiReview?.needsReview ? "暂不评分" : `${assessment.totalScore}/20`}</strong>
+        <strong>${flagged ? "暂不评分" : `${assessment.totalScore}/20`}</strong>
       </div>
       ${
-        assessment.aiReview?.needsReview
-          ? `<p class="ai-review-warning">${assessment.aiReview.blocked ? "发现高置信度 AI 表达" : "发现多组疑似 AI 模板表达"}。本篇暂时记为 0 分，请提交给老师复核。</p>`
+        flagged
+          ? `<p class="ai-review-warning">${
+              assessment.relevance?.offTopic
+                ? "文章完全跑题。按照 9868 Mark Scheme，Content 和语言部分都记为 0 分。"
+                : assessment.aiReview.blocked
+                  ? "发现高置信度 AI 表达。本篇暂时记为 0 分，请提交给老师复核。"
+                  : "发现多组疑似 AI 模板表达。本篇暂时记为 0 分，请提交给老师复核。"
+            }</p>`
           : `<div class="score-summary-rubric">
               <span>内容 ${assessment.contentScore}/8</span>
               <span>语言与结构 ${assessment.linguisticScore}/6</span>
               <span>准确性 ${assessment.accuracyScore}/6</span>
             </div>`
       }
-      <p class="muted">字数：${assessment.chars} · AI 痕迹初筛：${assessment.aiReview.level}</p>
+      <p class="muted">字数：${assessment.chars} · 扣题：${assessment.relevance?.label ?? "未检查"} · AI 痕迹初筛：${assessment.aiReview.level}</p>
       <div class="task-actions">
         <button class="button" data-action="email-submission" data-id="${partId}">${icon("mail")} 发送本篇评分给老师</button>
       </div>
     </section>
-  `;
+    `;
+  };
 
   app.innerHTML = `
     <section class="complete-view">
@@ -1398,7 +1489,10 @@ function renderMockComplete(submission) {
 }
 
 function renderScoreSummary(submission, assessment) {
-  const aiFlagged = assessment.aiReview?.needsReview;
+  const aiFlagged = assessment.aiReview?.needsReview || assessment.relevance?.offTopic;
+  const blockedMessage = assessment.relevance?.offTopic
+    ? "文章完全跑题。按照 9868 Mark Scheme，Content 和语言部分都记为 0 分。"
+    : "系统检测到疑似 AI 写作痕迹，本篇暂时记为 0 分，请提交给老师复核。";
   return `
     <div class="score-summary">
       <div class="score-summary-head">
@@ -1407,7 +1501,7 @@ function renderScoreSummary(submission, assessment) {
       </div>
       ${
         aiFlagged
-          ? `<p class="ai-review-warning">系统检测到疑似 AI 写作痕迹，本篇暂时记为 0 分，请提交给老师复核。</p>`
+          ? `<p class="ai-review-warning">${blockedMessage}</p>`
           : `<div class="score-summary-rubric">
               <span>内容 Content ${assessment.contentScore}/8</span>
               <span>语言范围与结构 ${assessment.linguisticScore}/6</span>
@@ -1425,7 +1519,10 @@ function renderScore(submissionId) {
   if (!submission) return renderHome();
   if (submission.mode === "mock") return renderMockComplete(submission);
   const assessment = assessSubmission(submission);
-  const aiFlagged = assessment.aiReview?.needsReview;
+  const aiFlagged = assessment.aiReview?.needsReview || assessment.relevance?.offTopic;
+  const blockedMessage = assessment.relevance?.offTopic
+    ? "文章完全跑题。按照 9868 Mark Scheme，Content 和语言部分都记为 0 分。"
+    : "系统检测到疑似 AI 写作痕迹，本篇暂时记为 0 分，请提交给老师复核。";
 
   app.innerHTML = `
     <section class="page-header">
@@ -1441,7 +1538,7 @@ function renderScore(submissionId) {
         <div class="score-large">${aiFlagged ? "暂不评分" : `${assessment.totalScore}<span>/20</span>`}</div>
         ${
           aiFlagged
-            ? `<p class="ai-review-warning">系统检测到疑似 AI 写作痕迹，本篇暂时记为 0 分，请提交给老师复核。</p>`
+            ? `<p class="ai-review-warning">${blockedMessage}</p>`
             : `<div class="score-rubric-grid">
           ${[
             ["内容 Content", assessment.contentScore, 8, "是否扣题，例子和解释是否充分"],
@@ -1514,6 +1611,7 @@ ${checks}
 修改建议：
 ${suggestions}
 
+题目相关度：${assessment.relevance?.label ?? "未检查"} · 命中 ${assessment.relevance?.matched ?? 0}/${assessment.relevance?.total ?? 0} 个题目关键词
 ${assessment.aiReview?.needsReview ? `AI 痕迹初筛：${assessment.aiReview.level}\n命中表达：${assessment.aiReview.matches.join("、") || "无"}\n处理结果：暂不评分，提交老师复核\n\n` : ""}
 本次全文：
 ${assessment.essay}`;
@@ -1523,8 +1621,12 @@ function buildMockScoreReportText(id) {
   const submission = state.submissions.find((item) => item.id === id);
   if (!submission) return "";
   const paper = getMockPaper(submission.paperId);
-  const assessmentA = assessEssayText("argument", submission.essays?.A ?? "");
-  const assessmentB = assessEssayText(submission.mockTrackB ?? "description", submission.essays?.B ?? "");
+  const assessmentA = assessEssayText("argument", submission.essays?.A ?? "", paper?.paperA.text ?? "");
+  const assessmentB = assessEssayText(
+    submission.mockTrackB ?? "description",
+    submission.essays?.B ?? "",
+    paper && submission.mockTrackB ? paper.paperB[submission.mockTrackB].text : ""
+  );
   const line = (label, value) => `${label}：${value}`;
   return `训练类型：${submission.trackName}
 题目：${submission.question}
@@ -1534,6 +1636,7 @@ Paper A · 议论文 / 讨论文
 ${paper ? line("题目", paper.paperA.text) : ""}
 字数：${assessmentA.chars}
 机器初评：${assessmentA.aiReview?.needsReview ? "0/20 · 暂不评分，提交老师复核" : `${assessmentA.totalScore}/20`}
+题目相关度：${assessmentA.relevance?.label ?? "未检查"} · 命中 ${assessmentA.relevance?.matched ?? 0}/${assessmentA.relevance?.total ?? 0} 个题目关键词
 AI 痕迹初筛：${assessmentA.aiReview.level}
 命中表达：${assessmentA.aiReview.matches.join("、") || "无"}
 
@@ -1541,6 +1644,7 @@ Paper B · ${mockTrackName(submission.mockTrackB)}
 ${paper && submission.mockTrackB ? line("题目", paper.paperB[submission.mockTrackB].text) : ""}
 字数：${assessmentB.chars}
 机器初评：${assessmentB.aiReview?.needsReview ? "0/20 · 暂不评分，提交老师复核" : `${assessmentB.totalScore}/20`}
+题目相关度：${assessmentB.relevance?.label ?? "未检查"} · 命中 ${assessmentB.relevance?.matched ?? 0}/${assessmentB.relevance?.total ?? 0} 个题目关键词
 AI 痕迹初筛：${assessmentB.aiReview.level}
 命中表达：${assessmentB.aiReview.matches.join("、") || "无"}
 
@@ -2486,7 +2590,7 @@ function saveMockPartSubmission(paper, stage, trackId, essay, duration) {
       }
     ],
     essay: essay.trim(),
-    assessment: assessEssayText(trackId, essay.trim()),
+    assessment: assessEssayText(trackId, essay.trim(), question),
     duration
   };
   state.submissions.unshift(submission);
