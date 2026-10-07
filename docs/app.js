@@ -1,4 +1,4 @@
-import { TRACKS, LANGUAGE_LIBRARY, BOSS_PROMPTS, PRACTICE_BANK } from "./data.js?v=19";
+import { TRACKS, LANGUAGE_LIBRARY, BOSS_PROMPTS, PRACTICE_BANK } from "./data.js?v=20";
 
 const LITERATURE_TRACK = {
   id: "literature",
@@ -725,6 +725,15 @@ function makePracticeLevel(trackId, index) {
         sample: "首段：背景 + 有人认为 + 我的立场 + 两个 point。中间段：反方 + 驳论 + 例子 + Explain + Link。结尾：总结 + 点题 + 升华。",
         explanation: "提纲必须能看到完整的文章结构。",
         tip: "每一段都问自己：这一段的任务是什么？"
+      },
+      {
+        kind: "text",
+        context,
+        prompt: "现在把提纲写成一整篇文章，目标 350–500 字。",
+        minChars: 350,
+        sample: "首段交代背景并亮出立场，中间两段分别用反方观点、例子和 Explain 展开，结尾总结、点题并升华。",
+        explanation: "完整文章要包含首段、两到三个主体段和结尾，不能只列提纲。",
+        tip: "写完先看字数，再看有没有反方、例子、Explain 和结尾回扣。"
       }
     ];
   } else if (trackId === "description") {
@@ -775,6 +784,15 @@ function makePracticeLevel(trackId, index) {
         sample: "浪花一次次被推回海里，又一次次涌上来，让我明白成长也是一次次重来。",
         explanation: "结尾要把景物特征和人生感受连接起来。",
         tip: "句式：景物……像……，让我明白……"
+      },
+      {
+        kind: "text",
+        context,
+        prompt: "现在把前面的观察和感受写成一篇完整描写文，目标 350–500 字。",
+        minChars: 350,
+        sample: "开头交代观察对象和环境，中间按时间或空间顺序展开两到三个细节层，结尾借景抒情。",
+        explanation: "描写文以描写为主，叙事只作为辅助，不能写成流水账。",
+        tip: "写完检查：五感是否具体、顺序是否清楚、结尾是否落到感受。"
       }
     ];
   } else if (trackId === "narrative") {
@@ -823,6 +841,15 @@ function makePracticeLevel(trackId, index) {
         sample: "那天我没有赢得比赛，却第一次没有中途放弃。原来成长不一定是赢，而是愿意再试一次。",
         explanation: "结尾要写出人物发生了什么变化。",
         tip: "不要重复情节，写“我明白了什么”。"
+      },
+      {
+        kind: "text",
+        context,
+        prompt: "现在把事件写成一篇完整记叙文，目标 350–500 字。",
+        minChars: 350,
+        sample: "开头交代六要素，中间推进事件并突出冲突和转折，结尾交代结果并点题升华。",
+        explanation: "记叙文要围绕一个中心事件，重点写关键选择和人物变化。",
+        tip: "写完检查：六要素是否齐全、高潮是否有转折、结尾是否写“我明白了什么”。"
       }
     ];
   } else {
