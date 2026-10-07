@@ -1,4 +1,4 @@
-import { TRACKS, LANGUAGE_LIBRARY, BOSS_PROMPTS, PRACTICE_BANK } from "./data.js?v=20";
+import { TRACKS, LANGUAGE_LIBRARY, BOSS_PROMPTS, PRACTICE_BANK } from "./data.js?v=21";
 
 const LITERATURE_TRACK = {
   id: "literature",
@@ -267,6 +267,7 @@ function render() {
   else if (section === "bank") renderBank(first);
   else if (section === "practice") renderPractice(first, second);
   else if (section === "complete") renderComplete(first);
+  else if (section === "score") renderScore(first);
   else renderHome();
 
   renderTopStats();
@@ -534,6 +535,11 @@ function renderLevelView(track, level) {
         <p class="eyebrow">${escapeHtml(stepKindLabel(step.kind))}</p>
         ${step.context ? `<div class="question-context"><span>题目原句</span><p>${escapeHtml(step.context)}</p></div>` : ""}
         <h2>${escapeHtml(step.prompt)}</h2>
+        ${
+          step.assemble && !session.checked
+            ? `<button class="button ghost draft-assemble" data-action="assemble-essay">${icon("sparkles")} 用前面答案生成全文草稿</button>`
+            : ""
+        }
         ${renderStepInput(step)}
         ${session.showTip ? renderLanguageTip(step, track) : ""}
         ${session.checked ? renderFeedback(step) : ""}
@@ -731,6 +737,7 @@ function makePracticeLevel(trackId, index) {
         context,
         prompt: "现在把提纲写成一整篇文章，目标 350–500 字。",
         minChars: 350,
+        assemble: "argument",
         sample: "首段交代背景并亮出立场，中间两段分别用反方观点、例子和 Explain 展开，结尾总结、点题并升华。",
         explanation: "完整文章要包含首段、两到三个主体段和结尾，不能只列提纲。",
         tip: "写完先看字数，再看有没有反方、例子、Explain 和结尾回扣。"
@@ -790,6 +797,7 @@ function makePracticeLevel(trackId, index) {
         context,
         prompt: "现在把前面的观察和感受写成一篇完整描写文，目标 350–500 字。",
         minChars: 350,
+        assemble: "description",
         sample: "开头交代观察对象和环境，中间按时间或空间顺序展开两到三个细节层，结尾借景抒情。",
         explanation: "描写文以描写为主，叙事只作为辅助，不能写成流水账。",
         tip: "写完检查：五感是否具体、顺序是否清楚、结尾是否落到感受。"
@@ -847,6 +855,7 @@ function makePracticeLevel(trackId, index) {
         context,
         prompt: "现在把事件写成一篇完整记叙文，目标 350–500 字。",
         minChars: 350,
+        assemble: "narrative",
         sample: "开头交代六要素，中间推进事件并突出冲突和转折，结尾交代结果并点题升华。",
         explanation: "记叙文要围绕一个中心事件，重点写关键选择和人物变化。",
         tip: "写完检查：六要素是否齐全、高潮是否有转折、结尾是否写“我明白了什么”。"
@@ -911,6 +920,139 @@ function makePracticeLevel(trackId, index) {
   };
 }
 
+function stepAnswerByIndex(index) {
+  return session.stepAnswers?.[index]?.answer?.trim() ?? "";
+}
+
+function splitIntoClauses(value) {
+  return value
+    .split(/[；;，,、]/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function splitIntoSentences(value) {
+  return value
+    .split(/[。！？]/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function buildSenseHint(senses) {
+  const hints = {
+    视觉: "我会写清色彩、光线、明暗、远近和景物轮廓的变化。",
+    听觉: "我会写清声音的远近、高低、疏密和变化。",
+    嗅觉: "我会写清空气里的气味，以及它给画面带来的氛围。",
+    触觉: "我会写清风、温度、湿度或物体表面落在皮肤上的感觉。",
+    内心感受: "我会写出景物变化带来的心情起伏，并把感受放在最后。"
+  };
+  const selected = splitIntoClauses(senses)
+    .map((item) => hints[item])
+    .filter(Boolean);
+  return selected.length
+    ? selected.join(" ")
+    : "我会从视觉、听觉和感受中选两到三种，把画面写具体。";
+}
+
+function buildEssayDraft(trackId) {
+  const context = session.practicePrompt ?? "";
+  const note = "以下草稿由你前面的答案自动整理。请把【请补写】改成自己的内容，并删除本行说明后再继续修改。";
+
+  if (trackId === "description") {
+    const object = stepAnswerByIndex(0);
+    const senses = stepAnswerByIndex(1);
+    const impressions = stepAnswerByIndex(2);
+    const order = stepAnswerByIndex(3);
+    const ending = stepAnswerByIndex(4);
+    const sentences = splitIntoSentences(impressions);
+    const overall = sentences[0] ?? "";
+    const detail = sentences.slice(1).join("。");
+
+    return `${note}
+
+题目：${context}
+
+我选择把观察目光落在${object || "题目要求的对象"}上。最先进入画面的整体印象是：${overall || "【请补写整体画面：先写眼前最鲜明的景象。】"}
+
+接着，我按照${order || "由整体到局部、由远到近的顺序"}移动视线，把画面拉近。${detail ? `我特别留意到：${detail}。` : "【请补写一处细节，写出具体的颜色、形状、声音或动作。】"}
+
+这一段我重点使用${senses || "两到三种感官"}。${buildSenseHint(senses)}
+
+【请补写 80–120 字：把上面的感官提示变成具体画面，不能只写“很美、很好”。】
+
+${ending || "【请补写借景抒情结尾：景物……像……，让我明白……】"}`;
+  }
+
+  if (trackId === "argument") {
+    const definitions = stepAnswerByIndex(2);
+    const stance = stepAnswerByIndex(4);
+    const points = stepAnswerByIndex(5);
+    const evidenceExplain = stepAnswerByIndex(6);
+    const outline = stepAnswerByIndex(7);
+
+    return `${note}
+
+题目：${context}
+
+首段
+在展开论证前，我先界定题目中的关键词：${definitions || "【请补写核心对象、判断标准和限定范围的定义。】"}
+基于这个界定，我的立场是：${stance || "【请补写你的立场和一句理由。】"}
+由此，我提出两个分论点：${points || "【请补写两个语法相近的并列句。】"}
+
+主体段一
+${evidenceExplain || "【请补写一个具体例子，并写两句 Explain 说明它为什么支持你的 point。】"}
+为了让例子真正服务于分论点，我会在例子后面清楚说明它证明了什么，以及为什么能够证明。
+
+主体段二
+【请补写 80–120 字：先写反方观点，再写我方第二个理由、例子和 Explain，最后用 Link 回到题目。】
+
+结尾
+我的段落安排是：${outline || "【请补写首段、两个主体段和结尾的提纲。】"}
+总之，我的结论会再次回应题目中的核心关系，并说明它适用的条件和后果。`;
+  }
+
+  if (trackId === "narrative") {
+    const elements = stepAnswerByIndex(0);
+    const conflict = stepAnswerByIndex(2);
+    const actionMind = stepAnswerByIndex(3);
+    const ending = stepAnswerByIndex(4);
+
+    return `${note}
+
+题目：${context}
+
+开头
+${elements || "【请补写时间、地点、人物和起因。】"}
+
+经过
+${conflict || "【请补写冲突或转折：人物原本想怎么做，后来为什么改变。】"}
+${actionMind || "【请补写人物在关键一刻的动作和心理，不能只写“很紧张”。】"}
+
+【请补写 80–120 字：推进事件，写出冲突前后的变化，并保留一个最有力的高潮。】
+
+结尾
+${ending || "【请补写结果和点题：我明白了什么，人物发生了怎样的变化。】"}`;
+  }
+
+  return "";
+}
+
+function assembleEssay() {
+  const draft = buildEssayDraft(session.trackId);
+  if (!draft) {
+    toast("这一步没有可自动组稿的素材。");
+    return;
+  }
+  const hasWrittenText = session.text.trim().length > 20;
+  if (hasWrittenText && !window.confirm("文本框里已有内容。要用前面的答案重新生成草稿并替换吗？")) {
+    return;
+  }
+  session.text = draft;
+  session.checked = false;
+  render();
+  toast("草稿已生成。请继续把标出的部分补写完整。");
+}
+
 function renderPractice(trackId, index) {
   const track = getTrack(trackId);
   const level = makePracticeLevel(trackId, Number(index));
@@ -934,6 +1076,7 @@ function renderPractice(trackId, index) {
 function renderComplete(submissionId) {
   const submission = state.submissions.find((item) => item.id === submissionId);
   if (!submission) return renderHome();
+  const assessment = assessSubmission(submission);
 
   app.innerHTML = `
     <section class="complete-view">
@@ -944,6 +1087,7 @@ function renderComplete(submissionId) {
         <p class="complete-lead">不错哦！现在你完成了</p>
         <p class="complete-question">“${escapeHtml(submission.question)}”</p>
         <p class="complete-lead">继续练习下一道题吧！</p>
+        ${renderScoreSummary(submission, assessment)}
         <div class="task-actions">
           <button class="button primary" data-route="${`#/track/${submission.trackId}`}">${icon("play")} 再练一道</button>
           <button class="button" data-route="#/progress">${icon("clipboard-list")} 查看我的提交</button>
@@ -953,6 +1097,288 @@ function renderComplete(submissionId) {
     </section>
   `;
   window.requestAnimationFrame(startConfetti);
+}
+
+function submissionEssay(submission) {
+  const lastAnswer = submission.answers?.at(-1)?.answer?.trim() ?? "";
+  return lastAnswer
+    .replace(/^以下草稿由你前面的答案自动整理。[^\n]*\n+/u, "")
+    .replace(/【请补写[^】]*】/g, "")
+    .trim();
+}
+
+function matchCount(text, terms) {
+  return terms.reduce((sum, term) => sum + (text.includes(term) ? 1 : 0), 0);
+}
+
+function assessSubmission(submission) {
+  const essay = submissionEssay(submission);
+  const chars = countWritingCharacters(essay);
+  const paragraphs = essay
+    .split(/\n\s*\n/)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 10);
+  const sentences = essay.split(/[。！？]/).map((part) => part.trim()).filter(Boolean);
+  const sentenceLengths = sentences.map((sentence) => countWritingCharacters(sentence)).filter(Boolean);
+  const maxSentence = Math.max(1, ...sentenceLengths);
+  const minSentence = Math.min(...sentenceLengths);
+  const sentenceVariety = maxSentence / Math.max(1, minSentence);
+  const colloquialTerms = ["牛逼", "绝绝子", "666", "哈哈哈", "卧槽", "真的绝", "超级好", "好爽", "太帅了", "啥", "咋"];
+  const englishLetters = (essay.match(/[A-Za-z]{3,}/g) ?? []).length;
+  const longSentences = sentenceLengths.filter((length) => length > 100).length;
+  const punctuationIssues = (essay.match(/[，。]{3,}|[！？]{3,}/g) ?? []).length;
+  const formalConnectives = ["首先", "其次", "因此", "然而", "此外", "同时", "由此可见", "更重要的是", "一方面", "另一方面"];
+  const transitionCount = matchCount(essay, formalConnectives);
+  const personalPronouns = (essay.match(/我/g) ?? []).length;
+
+  const trackSignals = {
+    argument: {
+      core: ["我认为", "我同意", "我不同意", "我部分同意", "有人认为"],
+      evidence: ["例如", "比如", "譬如", "以", "正如"],
+      explain: ["说明", "因为", "因此", "由此可见", "这意味着"],
+      closing: ["总之", "综上", "由此可见", "因此"]
+    },
+    description: {
+      core: ["看到", "看见", "听见", "听到", "闻到", "感到", "远处", "近处", "眼前"],
+      evidence: ["像", "仿佛", "如同", "似乎", "一样"],
+      explain: ["让我", "使我", "想到", "感到", "明白"],
+      closing: ["原来", "让我", "想到", "明白", "也许", "仿佛"]
+    },
+    narrative: {
+      core: ["那天", "当时", "突然", "接着", "最后", "一开始"],
+      evidence: ["于是", "决定", "跑", "停", "看", "说", "攥"],
+      explain: ["因为", "担心", "想到", "心里", "明白"],
+      closing: ["从此", "终于", "原来", "明白", "成长"]
+    }
+  };
+  const signals = trackSignals[submission.trackId] ?? trackSignals.argument;
+  const checks = [
+    {
+      label: "达到 350 字",
+      passed: chars >= 350,
+      detail: `当前 ${chars} 字`,
+      tip: chars < 350 ? `再补写 ${350 - chars} 字。重点补具体画面或例子，不要只重复题目。` : "字数达到考试完整要求。"
+    },
+    {
+      label: "段落结构完整",
+      passed: paragraphs.length >= 3,
+      detail: `识别到 ${paragraphs.length} 个段落`,
+      tip: paragraphs.length < 3 ? "把首段、主体和结尾分成清楚段落，主体至少保留一个重点段。" : "段落层次清楚。"
+    },
+    {
+      label: "扣住题目核心",
+      passed: matchCount(essay, signals.core) > 0,
+      detail: matchCount(essay, signals.core) ? "找到扣题信号" : "未识别到扣题信号",
+      tip: "在首段明确写出题目核心词和你的立场或观察对象。"
+    },
+    {
+      label: "有具体例子或细节",
+      passed: matchCount(essay, signals.evidence) > 0,
+      detail: matchCount(essay, signals.evidence) ? "找到细节信号" : "未识别到具体例子或细节",
+      tip: submission.trackId === "argument" ? "补一个具体、可辨认的例子，不能只说“很多人”“有些学生”。" : "补一处可看见、听见或感受到的细节。"
+    },
+    {
+      label: "Explain 或感受有展开",
+      passed: matchCount(essay, signals.explain) > 0,
+      detail: matchCount(essay, signals.explain) ? "找到解释信号" : "未识别到解释或感受",
+      tip: "例子后至少再写两句，说明它证明了什么、为什么能证明，或这处景物让我产生什么感受。"
+    },
+    {
+      label: "结尾有回扣或升华",
+      passed: matchCount(essay, signals.closing) > 0,
+      detail: matchCount(essay, signals.closing) ? "找到结尾信号" : "未识别到结尾升华",
+      tip: "结尾重新回应题目，并写清人物变化或文章主题。"
+    },
+    {
+      label: "语言保持正式",
+      passed: colloquialTerms.every((term) => !essay.includes(term)) && englishLetters === 0,
+      detail: colloquialTerms.some((term) => essay.includes(term)) ? "发现口语词" : englishLetters ? "发现英文词" : "未发现明显口语或英文词",
+      tip: "删掉网络口语和英文词，换成书面表达。"
+    },
+    {
+      label: "句子长短有变化",
+      passed: sentenceLengths.length >= 4 && sentenceVariety >= 1.6,
+      detail: sentenceLengths.length ? `长短比例约 ${sentenceVariety.toFixed(1)}` : "暂未识别到完整句子",
+      tip: "把连续的短句合成一句，也把过长的句子拆开，保持长短交替。"
+    }
+  ];
+
+  let contentScore = chars >= 500 ? 6 : chars >= 350 ? 5 : chars >= 250 ? 3 : 1;
+  if (matchCount(essay, signals.core) > 0) contentScore += 1;
+  if (matchCount(essay, signals.evidence) > 0 && matchCount(essay, signals.explain) > 0) contentScore += 1;
+  contentScore = Math.min(8, contentScore);
+
+  let linguisticScore = paragraphs.length >= 3 ? 3 : paragraphs.length >= 2 ? 2 : 1;
+  if (transitionCount >= 2) linguisticScore += 1;
+  if (sentenceVariety >= 1.6) linguisticScore += 1;
+  if (colloquialTerms.every((term) => !essay.includes(term)) && englishLetters === 0) linguisticScore += 1;
+  linguisticScore = Math.min(6, linguisticScore);
+
+  let accuracyScore = 5;
+  if (chars < 350) accuracyScore = Math.min(accuracyScore, 3);
+  if (colloquialTerms.some((term) => essay.includes(term))) accuracyScore -= 1;
+  if (englishLetters > 0) accuracyScore -= 1;
+  if (longSentences > 0) accuracyScore -= 1;
+  if (punctuationIssues > 0) accuracyScore -= 1;
+  if (personalPronouns > Math.max(8, Math.floor(chars / 40))) accuracyScore -= 1;
+  accuracyScore = Math.max(1, Math.min(5, accuracyScore));
+
+  const totalScore = contentScore + linguisticScore + accuracyScore;
+  const suggestions = checks.filter((check) => !check.passed).map((check) => check.tip);
+
+  return {
+    essay,
+    chars,
+    paragraphs: paragraphs.length,
+    sentences: sentences.length,
+    contentScore,
+    linguisticScore,
+    accuracyScore,
+    totalScore,
+    checks,
+    suggestions
+  };
+}
+
+function renderScoreSummary(submission, assessment) {
+  return `
+    <div class="score-summary">
+      <div class="score-summary-head">
+        <span class="chip">机器初评</span>
+        <strong>${assessment.totalScore}<small>/20</small></strong>
+      </div>
+      <div class="score-summary-rubric">
+        <span>内容 Content ${assessment.contentScore}/8</span>
+        <span>语言范围与结构 ${assessment.linguisticScore}/6</span>
+        <span>语言准确性 ${assessment.accuracyScore}/6</span>
+      </div>
+      <p class="muted">机器只检查字数、结构、细节和常见语言信号。错别字、病句和观点深度需要老师终评。</p>
+      <button class="button" data-route="#/score/${submission.id}">${icon("clipboard-check")} 查看评分详情与修改建议</button>
+    </div>
+  `;
+}
+
+function renderScore(submissionId) {
+  const submission = state.submissions.find((item) => item.id === submissionId);
+  if (!submission) return renderHome();
+  const assessment = assessSubmission(submission);
+
+  app.innerHTML = `
+    <section class="page-header">
+      <div class="page-title">
+        <button class="inline-link" data-route="#/progress">← 返回我的进度</button>
+        <h1>评分详情</h1>
+        <p>这是网站自动生成的结构初评，最终成绩请以老师按 9868 标准给出的终评为准。</p>
+      </div>
+    </section>
+    <section class="score-detail">
+      <div class="panel score-overview">
+        <p class="eyebrow">机器初评</p>
+        <div class="score-large">${assessment.totalScore}<span>/20</span></div>
+        <div class="score-rubric-grid">
+          ${[
+            ["内容 Content", assessment.contentScore, 8, "是否扣题，例子和解释是否充分"],
+            ["语言范围与结构", assessment.linguisticScore, 6, "段落、衔接和句子变化"],
+            ["语言准确性", assessment.accuracyScore, 6, "错别字、病句和标点仍需老师终评"]
+          ].map(([label, score, total, note]) => `
+            <div>
+              <span>${label}</span>
+              <strong>${score}/${total}</strong>
+              <small>${note}</small>
+            </div>
+          `).join("")}
+        </div>
+        <div class="score-note">机器不会给语言准确性打满分，最高先显示 5/6，留 1 分给教师确认。</div>
+      </div>
+      <div class="panel">
+        <h2>自动检查</h2>
+        <div class="score-check-list">
+          ${assessment.checks.map((check) => `
+            <div class="score-check ${check.passed ? "passed" : "failed"}">
+              <span>${check.passed ? icon("circle-check") : icon("circle-alert")}</span>
+              <div><strong>${escapeHtml(check.label)}</strong><small>${escapeHtml(check.detail)}</small></div>
+            </div>
+          `).join("")}
+        </div>
+      </div>
+      <div class="panel">
+        <h2>下一步修改建议</h2>
+        ${
+          assessment.suggestions.length
+            ? `<ol class="score-suggestions">${assessment.suggestions.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ol>`
+            : `<p class="muted">自动检查没有发现明显结构问题。老师终评时会进一步检查内容深度和语言准确性。</p>`
+        }
+        <h2>本次全文</h2>
+        <div class="essay-preview">${escapeHtml(assessment.essay || "未找到全文。")}</div>
+        <div class="task-actions">
+          <button class="button primary" data-action="copy-score-report" data-id="${submission.id}">${icon("copy")} 复制评分报告</button>
+          <button class="button" data-action="print-score-report" data-id="${submission.id}">${icon("printer")} 打印</button>
+          <button class="button ghost" data-action="email-submission" data-id="${submission.id}">${icon("mail")} 提交给老师</button>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function buildScoreReportText(id) {
+  const submission = state.submissions.find((item) => item.id === id);
+  if (!submission) return "";
+  const assessment = assessSubmission(submission);
+  const checks = assessment.checks
+    .map((check) => `${check.passed ? "通过" : "需改进"}：${check.label}（${check.detail}）`)
+    .join("\n");
+  const suggestions = assessment.suggestions.length
+    ? assessment.suggestions.map((item, index) => `${index + 1}. ${item}`).join("\n")
+    : "自动检查未发现明显结构问题，请老师继续检查内容深度和语言准确性。";
+  return `训练类型：${submission.trackName}
+题目：${submission.question}
+完成时间：${submission.date}
+
+机器初评：${assessment.totalScore}/20
+内容 Content：${assessment.contentScore}/8
+语言范围与结构：${assessment.linguisticScore}/6
+语言准确性：${assessment.accuracyScore}/6
+
+自动检查：
+${checks}
+
+修改建议：
+${suggestions}
+
+本次全文：
+${assessment.essay}`;
+}
+
+function copyScoreReport(id) {
+  const text = buildScoreReportText(id);
+  if (!text) return;
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).then(() => toast("评分报告已复制")).catch(() => fallbackCopy(text));
+  } else {
+    fallbackCopy(text);
+  }
+}
+
+function printScoreReport(id) {
+  const text = buildScoreReportText(id);
+  if (!text) return;
+  const printWindow = window.open("", "_blank", "width=760,height=900");
+  if (!printWindow) {
+    toast("浏览器阻止了新窗口。请复制内容后自行打印。");
+    return;
+  }
+  printWindow.document.write(`<meta charset="utf-8"><title>作文评分报告</title><pre style="white-space:pre-wrap;font-family:system-ui;padding:24px;line-height:1.7">${escapeHtml(text)}</pre>`);
+  printWindow.document.close();
+  printWindow.print();
+}
+
+function emailSubmission(id) {
+  const submission = state.submissions.find((item) => item.id === id);
+  if (!submission) return;
+  const subject = encodeURIComponent(`[9868作文提交] ${submission.question.slice(0, 24)}`);
+  const body = encodeURIComponent(buildScoreReportText(id));
+  window.location.href = `mailto:wuxi2@xdf.cn?subject=${subject}&body=${body}`;
+  toast("已打开邮件草稿，请确认收件人和正文后发送。");
 }
 
 function startConfetti() {
@@ -1442,6 +1868,7 @@ function renderSubmissionCard(submission) {
           <p class="muted">${escapeHtml(submission.date)} · ${submission.answers.length} 个作答步骤</p>
         </div>
         <div class="task-actions">
+          <button class="button" data-route="#/score/${submission.id}">${icon("clipboard-check")} 查看初评</button>
           <button class="button" data-action="copy-submission" data-id="${submission.id}">${icon("copy")} 复制全部</button>
           <button class="button ghost" data-action="print-submission" data-id="${submission.id}">${icon("printer")} 打印</button>
         </div>
@@ -1718,6 +2145,8 @@ document.addEventListener("click", (event) => {
     checkStep();
   } else if (action === "next-step") {
     nextStep();
+  } else if (action === "assemble-essay") {
+    assembleEssay();
   } else if (action === "clear-step") {
     resetStepState();
     render();
@@ -1738,6 +2167,12 @@ document.addEventListener("click", (event) => {
     copySubmission(target.dataset.id);
   } else if (action === "print-submission") {
     printSubmission(target.dataset.id);
+  } else if (action === "copy-score-report") {
+    copyScoreReport(target.dataset.id);
+  } else if (action === "print-score-report") {
+    printScoreReport(target.dataset.id);
+  } else if (action === "email-submission") {
+    emailSubmission(target.dataset.id);
   } else if (action === "reset-progress") {
     if (!session.confirmReset) {
       session.confirmReset = true;
