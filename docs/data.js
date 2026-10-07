@@ -753,3 +753,38 @@ export const PRACTICE_BANK = {
 };
 
 export const BOSS_PROMPTS = PRACTICE_BANK.argument.map((item) => item.text);
+
+export const MOCK_PAPERS = [
+  {
+    id: "mock-1",
+    name: "模拟卷（一）",
+    paperA: {
+      type: "议论文 / 讨论文",
+      text: "在信息时代，人们获取信息越容易，就越难形成独立的判断。你同意吗？请讨论。"
+    },
+    paperB: {
+      description: {
+        text: "描写一次你清晨乘坐地铁时的场景及你的感受。"
+      },
+      narrative: {
+        text: "以“那一刻，我终于鼓起了勇气。”为结尾写一篇记叙文。"
+      }
+    }
+  },
+  {
+    id: "mock-2",
+    name: "模拟卷（二）",
+    paperA: {
+      type: "议论文 / 讨论文",
+      text: "学校不应该只根据考试成绩来评价一个学生的全部能力。你同意吗？请讨论。"
+    },
+    paperB: {
+      description: {
+        text: "描写雨天放学后学校门口的情景及你的感受。"
+      },
+      narrative: {
+        text: "以“门打开的那一刻，我愣住了。”为开头写一篇记叙文。"
+      }
+    }
+  }
+];
