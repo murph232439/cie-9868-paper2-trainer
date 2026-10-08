@@ -1,4 +1,4 @@
-import { TRACKS, LANGUAGE_LIBRARY, BOSS_PROMPTS, PRACTICE_BANK, MOCK_PAPERS } from "./data.js?v=25";
+import { TRACKS, LANGUAGE_LIBRARY, BOSS_PROMPTS, PRACTICE_BANK, MOCK_PAPERS } from "./data.js?v=26";
 
 const LITERATURE_TRACK = {
   id: "literature",
@@ -1432,27 +1432,27 @@ function assessEssayText(trackId, essay, question = "") {
     }
   ];
 
-  let contentScore = chars >= 500 ? 6 : chars >= 350 ? 5 : chars >= 250 ? 3 : 1;
-  if (matchCount(essay, signals.core) > 0) contentScore += 1;
-  if (matchCount(essay, signals.evidence) > 0 && matchCount(essay, signals.explain) > 0) contentScore += 1;
-  if (relevance.fullyRelevant) contentScore += 1;
+  let contentScore = chars >= 350 ? 3 : chars >= 250 ? 2 : 1;
+  if (matchCount(essay, signals.evidence) > 0) contentScore += 1;
+  if (matchCount(essay, signals.explain) > 0) contentScore += 1;
+  if (relevance.fullyRelevant && matchCount(essay, signals.closing) > 0) contentScore += 1;
   if (relevance.partiallyRelevant) contentScore = Math.min(contentScore, 4);
-  contentScore = Math.min(8, contentScore);
+  contentScore = Math.min(6, contentScore);
 
-  let linguisticScore = paragraphs.length >= 3 ? 3 : paragraphs.length >= 2 ? 2 : 1;
+  let linguisticScore = paragraphs.length >= 4 ? 3 : paragraphs.length >= 3 ? 2 : 1;
   if (transitionCount >= 2) linguisticScore += 1;
   if (sentenceVariety >= 1.6) linguisticScore += 1;
-  if (colloquialTerms.every((term) => !essay.includes(term)) && englishLetters === 0) linguisticScore += 1;
-  linguisticScore = Math.min(6, linguisticScore);
+  linguisticScore = Math.min(5, linguisticScore);
 
-  let accuracyScore = 5;
-  if (chars < 350) accuracyScore = Math.min(accuracyScore, 3);
+  let accuracyScore = 3;
+  if (colloquialTerms.every((term) => !essay.includes(term)) && englishLetters === 0 && longSentences === 0 && punctuationIssues === 0) accuracyScore += 1;
+  if (personalPronouns <= Math.max(8, Math.floor(chars / 40))) accuracyScore += 1;
   if (colloquialTerms.some((term) => essay.includes(term))) accuracyScore -= 1;
   if (englishLetters > 0) accuracyScore -= 1;
   if (longSentences > 0) accuracyScore -= 1;
   if (punctuationIssues > 0) accuracyScore -= 1;
   if (personalPronouns > Math.max(8, Math.floor(chars / 40))) accuracyScore -= 1;
-  accuracyScore = Math.max(1, Math.min(5, accuracyScore));
+  accuracyScore = Math.max(1, Math.min(4, accuracyScore));
 
   const totalScore = contentScore + linguisticScore + accuracyScore;
   const suggestions = checks.filter((check) => !check.passed).map((check) => check.tip);
@@ -1535,6 +1535,7 @@ function renderMockComplete(submission) {
         ${needsReview ? `<p class="ai-review-warning">本篇模考疑似包含 AI 写作痕迹，成绩暂不确认，请提交给老师复核。</p>` : ""}
         ${renderPaperResult("Paper A", assessmentA, paper?.paperA.text ?? "", partAId)}
         ${renderPaperResult("Paper B", assessmentB, paper && submission.mockTrackB ? paper.paperB[submission.mockTrackB].text : "", partBId)}
+        <p class="muted" style="margin-top:16px">机器初评只给到中低档，内容最高 6、语言与结构最高 5、准确性最高 4，接近满分需老师终评。</p>
         <div class="task-actions">
           <button class="button primary" data-action="copy-score-report" data-id="${submission.id}">${icon("copy")} 复制模考报告</button>
           <button class="button" data-action="print-score-report" data-id="${submission.id}">${icon("printer")} 打印</button>
@@ -1612,7 +1613,7 @@ function renderScore(submissionId) {
             </div>
           `).join("")}
         </div>
-        <div class="score-note">机器不会给语言准确性打满分，最高先显示 5/6，留 1 分给教师确认。</div>`
+        <div class="score-note">机器初评只给到中低档：内容最高 6、语言与结构最高 5、准确性最高 4。7 分以上的内容、6 分语言请以老师终评为准。</div>`
         }
       </div>
       <div class="panel">
