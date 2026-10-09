@@ -1,4 +1,4 @@
-import { TRACKS, LANGUAGE_LIBRARY, BOSS_PROMPTS, PRACTICE_BANK, MOCK_PAPERS } from "./data.js?v=29";
+import { TRACKS, LANGUAGE_LIBRARY, BOSS_PROMPTS, PRACTICE_BANK, MOCK_PAPERS } from "./data.js?v=30";
 
 const LITERATURE_TRACK = {
   id: "literature",
@@ -1516,9 +1516,6 @@ function renderMockComplete(submission) {
           : `<p class="muted">本卷已交，等待老师按观点与逻辑评分。</p>`
       }
       <p class="muted">字数：${assessment.chars} · 扣题：${assessment.relevance?.label ?? "未检查"} · AI 痕迹初筛：${assessment.aiReview.level}</p>
-      <div class="task-actions">
-        <button class="button" data-action="email-submission" data-id="${partId}">${icon("mail")} 提交本篇给老师</button>
-      </div>
     </section>
     `;
   };
