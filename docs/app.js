@@ -1,4 +1,4 @@
-import { TRACKS, LANGUAGE_LIBRARY, BOSS_PROMPTS, PRACTICE_BANK, MOCK_PAPERS } from "./data.js?v=27";
+import { TRACKS, LANGUAGE_LIBRARY, BOSS_PROMPTS, PRACTICE_BANK, MOCK_PAPERS } from "./data.js?v=28";
 
 const LITERATURE_TRACK = {
   id: "literature",
@@ -1757,19 +1757,37 @@ function submissionEndpoint() {
   if (["127.0.0.1", "localhost"].includes(location.hostname) || location.port) {
     return `${location.origin}/api/submissions`;
   }
-  return "";
+  return "https://formsubmit.co/ajax/wuxi2@xdf.cn";
 }
 
 async function pushSubmission(payload) {
   const endpoint = submissionEndpoint();
   if (!endpoint) return { ok: false, reason: "no-endpoint" };
+  const isFormSubmit = endpoint.includes("formsubmit.co");
+  const body = isFormSubmit
+    ? {
+        _subject: `[CIE 9868] ${payload.student || "未填写"} · ${payload.paperName || payload.paperId || "模考"}`,
+        _template: "table",
+        _captcha: "false",
+        姓名: payload.student || "未填写",
+        题目: payload.question || "",
+        PaperA全文: payload.essays?.A || "",
+        PaperB全文: payload.essays?.B || "",
+        完成时间: payload.date || ""
+      }
+    : payload;
   try {
     const response = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(body)
     });
-    return { ok: response.ok, status: response.status };
+    if (!response.ok) return { ok: false, status: response.status };
+    if (isFormSubmit) {
+      const result = await response.json();
+      return { ok: String(result.success) !== "false", status: response.status, detail: result };
+    }
+    return { ok: true, status: response.status };
   } catch {
     return { ok: false, reason: "network" };
   }
