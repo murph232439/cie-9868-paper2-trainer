@@ -1,4 +1,4 @@
-import { TRACKS, LANGUAGE_LIBRARY, BOSS_PROMPTS, PRACTICE_BANK, MOCK_PAPERS } from "./data.js?v=28";
+import { TRACKS, LANGUAGE_LIBRARY, BOSS_PROMPTS, PRACTICE_BANK, MOCK_PAPERS } from "./data.js?v=29";
 
 const LITERATURE_TRACK = {
   id: "literature",
@@ -151,6 +151,8 @@ function freshSession() {
     mockUnlocked: false,
     mockPassword: "",
     mockStudent: "",
+    mockAssignedPaperId: null,
+    mockStudentKey: "",
     mockPaperId: null,
     mockStage: null,
     mockEssayA: "",
@@ -1739,9 +1741,13 @@ function printScoreReport(id) {
 function emailSubmission(id) {
   const submission = state.submissions.find((item) => item.id === id);
   if (!submission) return;
+  if (hasSentSubmission(id)) {
+    toast("这份内容已经提交过，无需重复发送。");
+    return;
+  }
   if (submissionEndpoint()) {
     pushSubmission(submission).then((result) => {
-      toast(result.ok ? "已提交到收作业后台。" : "提交到后台失败，请截图发给老师。");
+      toast(result.ok ? "已提交给老师。" : "提交失败，请截图发给老师。");
     });
     return;
   }
@@ -1760,19 +1766,51 @@ function submissionEndpoint() {
   return "https://formsubmit.co/ajax/wuxi2@xdf.cn";
 }
 
+function sentSubmissionIds() {
+  try {
+    return new Set(JSON.parse(localStorage.getItem("paper2_sent_submission_ids") || "[]"));
+  } catch {
+    return new Set();
+  }
+}
+
+function hasSentSubmission(id) {
+  return id ? sentSubmissionIds().has(id) : false;
+}
+
+function markSubmissionSent(id) {
+  if (!id) return;
+  const ids = sentSubmissionIds();
+  ids.add(id);
+  localStorage.setItem("paper2_sent_submission_ids", JSON.stringify([...ids].slice(-200)));
+}
+
+function submissionAnswerByStage(payload, stage) {
+  if (payload.essays?.[stage]) return payload.essays[stage];
+  if (payload.examStage === stage && payload.essay) return payload.essay;
+  const answer = (payload.answers || []).find((item) => {
+    const prompt = String(item?.prompt || "");
+    return prompt.includes(`Paper ${stage}`) || prompt.includes(`Paper${stage}`);
+  });
+  return answer?.answer || "";
+}
+
 async function pushSubmission(payload) {
+  if (payload.id && hasSentSubmission(payload.id)) {
+    return { ok: true, skipped: true };
+  }
   const endpoint = submissionEndpoint();
   if (!endpoint) return { ok: false, reason: "no-endpoint" };
   const isFormSubmit = endpoint.includes("formsubmit.co");
   const body = isFormSubmit
     ? {
-        _subject: `[CIE 9868] ${payload.student || "未填写"} · ${payload.paperName || payload.paperId || "模考"}`,
+        _subject: `[CIE 9868] ${payload.student || "未填写"} · ${payload.paperName || payload.paperId || "模考"}${payload.examStage ? ` · Paper ${payload.examStage}` : ""}`,
         _template: "table",
         _captcha: "false",
         姓名: payload.student || "未填写",
         题目: payload.question || "",
-        PaperA全文: payload.essays?.A || "",
-        PaperB全文: payload.essays?.B || "",
+        PaperA全文: submissionAnswerByStage(payload, "A"),
+        PaperB全文: submissionAnswerByStage(payload, "B"),
         完成时间: payload.date || ""
       }
     : payload;
@@ -1785,8 +1823,11 @@ async function pushSubmission(payload) {
     if (!response.ok) return { ok: false, status: response.status };
     if (isFormSubmit) {
       const result = await response.json();
-      return { ok: String(result.success) !== "false", status: response.status, detail: result };
+      const ok = String(result.success) !== "false";
+      if (ok) markSubmissionSent(payload.id);
+      return { ok, status: response.status, detail: result };
     }
+    markSubmissionSent(payload.id);
     return { ok: true, status: response.status };
   } catch {
     return { ok: false, reason: "network" };
@@ -2514,6 +2555,51 @@ function startMockTimer(onExpire) {
   }, 1000);
 }
 
+function hashString(value) {
+  let hash = 0;
+  for (const char of String(value)) {
+    hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  }
+  return hash;
+}
+
+async function getMockStudentKey() {
+  const cached = sessionStorage.getItem("cie_mock_student_key");
+  if (cached) return cached;
+  for (const endpoint of ["https://api.ipify.org?format=json", "https://api64.ipify.org?format=json", "https://ipapi.co/json/"]) {
+    try {
+      const response = await fetch(endpoint, { cache: "no-store" });
+      if (!response.ok) continue;
+      const data = await response.json();
+      const ip = data.ip || data.query;
+      if (ip) {
+        sessionStorage.setItem("cie_mock_student_key", ip);
+        return ip;
+      }
+    } catch {
+      // try the next IP service
+    }
+  }
+  const fingerprint = [
+    navigator.userAgent,
+    navigator.language,
+    screen.width,
+    screen.height,
+    Intl.DateTimeFormat().resolvedOptions().timeZone
+  ].join("|");
+  sessionStorage.setItem("cie_mock_student_key", fingerprint);
+  return fingerprint;
+}
+
+async function assignMockPaper() {
+  if (session.mockAssignedPaperId) return;
+  const key = await getMockStudentKey();
+  const index = hashString(key) % MOCK_PAPERS.length;
+  session.mockStudentKey = key;
+  session.mockAssignedPaperId = MOCK_PAPERS[index].id;
+  if (window.location.hash === "#/mock") render();
+}
+
 function renderMock() {
   stopMockTimer();
   if (!session.mockUnlocked) {
@@ -2539,29 +2625,46 @@ function renderMock() {
     return;
   }
 
+  if (!session.mockAssignedPaperId) {
+    app.innerHTML = `
+      <section class="mock-gate">
+        <div class="mock-gate-card">
+          <div class="complete-icon">${icon("loader-circle", 46)}</div>
+          <h1>正在分配模拟题</h1>
+          <p class="muted">系统正在根据你的网络信息生成一套专属模拟卷。</p>
+        </div>
+      </section>
+    `;
+    window.setTimeout(assignMockPaper, 0);
+    return;
+  }
+
+  const assignedPaper = getMockPaper(session.mockAssignedPaperId) ?? MOCK_PAPERS[0];
   app.innerHTML = `
     <section class="page-header">
       <div class="page-title">
         <button class="inline-link" data-route="#/home">← 返回训练大厅</button>
-        <h1>选择模拟卷</h1>
-        <p>每套模拟卷都包含 Paper A 和 Paper B。选好试卷后先完成 Paper A，再进入 Paper B。</p>
+        <h1>你的模拟卷已分配</h1>
+        <p>系统根据你的网络信息自动抽取了一套专属模拟卷。先完成 Paper A，再进入 Paper B。</p>
       </div>
     </section>
     <section class="mock-paper-grid">
-      ${MOCK_PAPERS.map((paper) => `
-        <article class="mock-paper-card">
-          <span class="chip">${escapeHtml(paper.name)}</span>
-          <h2>Paper 2 写作模拟</h2>
-          <p>A 卷：议论文 / 讨论文，350–500 字，最多 700 字。</p>
-          <p>B 卷：描写文或记叙文，二选一。</p>
-          <button class="button primary wide" data-route="#/mock-a/${paper.id}">${icon("play")} 开始这套模拟卷</button>
-        </article>
-      `).join("")}
+      <article class="mock-paper-card">
+        <span class="chip">${escapeHtml(assignedPaper.name)}</span>
+        <h2>Paper 2 写作模拟</h2>
+        <p>A 卷：议论文 / 讨论文，350–500 字，最多 700 字。</p>
+        <p>B 卷：描写文或记叙文，二选一。</p>
+        <button class="button primary wide" data-route="#/mock-a/${assignedPaper.id}">${icon("play")} 开始这套模拟卷</button>
+      </article>
     </section>
   `;
 }
 
 function renderMockA(paperId) {
+  if (session.mockAssignedPaperId && paperId !== session.mockAssignedPaperId) {
+    navigate(`#/mock-a/${session.mockAssignedPaperId}`);
+    return;
+  }
   const paper = getMockPaper(paperId);
   if (!session.mockUnlocked || !paper) {
     navigate("#/mock");
@@ -2569,10 +2672,14 @@ function renderMockA(paperId) {
   }
   if (session.mockPaperId !== paperId || session.mockStage !== "a") {
     const student = session.mockStudent;
+    const assignedPaperId = session.mockAssignedPaperId;
+    const studentKey = session.mockStudentKey;
     session = {
       ...freshSession(),
       mockUnlocked: true,
       mockStudent: student,
+      mockAssignedPaperId: assignedPaperId,
+      mockStudentKey: studentKey,
       mockPaperId: paperId,
       mockStage: "a"
     };
@@ -2622,10 +2729,14 @@ function renderMockB(paperId) {
     const durationA = session.mockDurationA;
     const submissionAId = session.mockSubmissionAId;
     const student = session.mockStudent;
+    const assignedPaperId = session.mockAssignedPaperId;
+    const studentKey = session.mockStudentKey;
     session = {
       ...freshSession(),
       mockUnlocked: true,
       mockStudent: student,
+      mockAssignedPaperId: assignedPaperId,
+      mockStudentKey: studentKey,
       mockPaperId: paperId,
       mockStage: "b",
       mockEssayA: essayA,
@@ -2694,6 +2805,7 @@ function saveMockPartSubmission(paper, stage, trackId, essay, duration) {
     mode: "mock-part",
     paperId: paper.id,
     paperName: paper.name,
+    student: session.mockStudent.trim() || "未填写",
     examStage: stage,
     trackId,
     trackName: `${paper.name} · Paper ${stage}`,
